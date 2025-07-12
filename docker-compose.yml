@@ -1,0 +1,43 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    container_name: discord_bot_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/workspace
+    #--- 实验性的：保存容器运行---
+    # command: sleep infinity
+    #----------------------------
+    depends_on:
+      - db
+    networks:
+      - bot_network
+
+  # MySQL数据库
+  db:
+    image: mysql:8.0
+    container_name: discord_bot_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3307:3306"
+    volumes:
+      # 使用命名卷来持久化数据库数据
+      - db_data:/var/lib/mysql
+    networks:
+      - bot_network
+    command: --default-authentication-plugin=mysql_native_password
+
+# 定义一个网络，让两个容器可以互相通信
+networks:
+  bot_network:
+    driver: bridge
+
+# 定义一个命名卷，用于持久化存储数据库数据
+volumes:
+  db_data:

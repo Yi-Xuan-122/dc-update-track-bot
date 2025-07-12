@@ -1,0 +1,27 @@
+{
+  "name": "Discord Bot Development",
+  
+ "dockerComposeFile": [
+    "../docker-compose.yml"
+  ],
+  
+  "service": "app",
+
+  "workspaceFolder": "/workspace",
+
+  "postCreateCommand": "echo '开发环境已就绪！数据库服务名为 \"db\"。'",  
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance", 
+        "donjayamanne.githistory",
+        "cweijan.vscode-mysql-client2"
+      ],
+      "settings": {
+      "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
+}

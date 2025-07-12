@@ -1,0 +1,26 @@
+# --- 敏感信息 ---
+.env
+
+# --- Python 缓存 ---
+# 解释器生成的缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- 虚拟环境 ---
+venv/
+env/
+.venv/
+
+# --- IDE/编辑器配置 ---
+# VS Code 的配置文件夹
+.vscode/
+
+# --- Docker 缓存和数据 ---
+*.log
+data/
+
+# --- 其他操作系统文件 ---
+.DS_Store
+Thumbs.db
