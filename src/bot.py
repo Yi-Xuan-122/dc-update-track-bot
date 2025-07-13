@@ -151,7 +151,7 @@ class SubscriptionView(ui.View):
 # --- DM:管理关系 ---
 class ManagementPaginatorView(ui.View):
     def __init__(self, bot, user_id, items, item_type):
-        super().__init__(timeout=1800)
+        super().__init__(timeout=300)
         self.bot = bot
         self.user_id = user_id
         self.item_type = item_type
@@ -294,7 +294,7 @@ class ManagementPaginatorView(ui.View):
 # --- DM:查看更新UI ---
 class UpdatesPaginatorView(ui.View):
     def __init__(self, bot_instance, user_id, all_updates):
-        super().__init__(timeout=43200)
+        super().__init__(timeout=300)
         self.bot = bot_instance
         self.user_id = user_id
         self.all_updates = all_updates
@@ -364,7 +364,7 @@ class UpdatesPaginatorView(ui.View):
 # --- DM:用户控制面板UI ---
 class UserPanel(ui.View):
     def __init__(self):
-        super().__init__(timeout=43200)
+        super().__init__(timeout=300)
 
     async def _show_management_panel(self, interaction: discord.Interaction, item_type: str):
         bot: "MyBot" = interaction.client
