@@ -19,8 +19,7 @@ RUN apk update && \
 COPY --from=builder /opt/pysetup/deps /usr/local/lib/python3.11/site-packages
 
 COPY . .
-
+# --- DVE --- 仅在开发环境中注释以下代码
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
-
 CMD ["python", "main.py"]

@@ -9,8 +9,8 @@ services:
       - .env
     volumes:
       - .:/workspace
-    #--- 实验性的：保存容器运行---
-    # command: sleep infinity
+    #--- DVE：保存容器运行---
+    #command: sleep infinity
     #----------------------------
     depends_on:
       - db
@@ -24,14 +24,21 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+    # 设置MySQL初始化数据卷，名称应该为env文件中定义的MYSQL_DATABASE
+      - MYSQL_DATABASE=discord_bot_db
     ports:
       - "3307:3306"
     volumes:
       # 使用命名卷来持久化数据库数据
       - db_data:/var/lib/mysql
+
     networks:
       - bot_network
-    command: --default-authentication-plugin=mysql_native_password
+    command: 
+      - --default-authentication-plugin=mysql_native_password
+      #默认时区为UTC+8
+      - --default-time-zone=+08:00
 
 # 定义一个网络，让两个容器可以互相通信
 networks:

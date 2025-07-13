@@ -1,160 +1,112 @@
 # Discord 更新推流机器人
 
-一个功能强大、基于Docker部署的Discord机器人。它允许帖子（Thread）作者为其内容建立一个灵活的订阅系统，并在发布更新时，通过“幽灵提及”精准地通知订阅了该帖子或关注了该作者的用户。
+# Discord 更新推流机器人 (Update Feed Bot)
 
-## 核心功能
+一个功能强大的 Discord 机器人，旨在帮助服务器内的创作者（如Mod作者、开发者、艺术家）更方便地向其关注者推送更新。它专为 Discord 的**论坛频道**设计，允许用户订阅特定帖子的更新，或关注某个作者的所有动态。
 
-- **基于帖子的订阅系统**: 用户可以在指定的论坛频道帖子中，通过点击按钮来订阅不同类型的更新。
-- **灵活的订阅选项**:
-  - **订阅发行版 (Release)**: 只接收该帖子的正式版更新通知。
-  - **订阅测试版 (Test)**: 只接收该帖子的测试版更新通知。
-  - **关注作者**: 接收该作者**所有**帖子的**所有类型**更新通知。
-- **权限控制**: 只有帖子的创建者（作者）有权为该帖子开启或发布更新。
-- **精准提及**: 使用“幽灵提及”特性，在不污染频道消息的情况下，确保用户能收到通知。
-- **分批发送**: 自动将需要提及的大量用户进行分批，避免超出Discord单条消息的提及上限，并防止API速率限制。
-- **实时状态更新**: 在推送更新期间，机器人会实时编辑一条状态消息，显示通知进度。
-- **管理员指令**: 提供带权限控制的管理指令，用于监控机器人自身的性能状态。
-- **高可配置性**: 所有关键参数（如Token、服务器ID、频道ID、消息文本等）均可通过 `.env` 文件进行配置。
+## ✨ 主要功能
 
-## 技术栈
+- **帖子订阅**: 用户可以针对性地订阅某个帖子的“发行版”或“测试版”更新。
+- **作者关注**: 用户可以关注自己喜欢的创作者，当该作者在指定论坛发布新帖子时，用户会收到通知。
+- **灵活的通知系统**: 更新时会向所有订阅者和关注者发送通知。
+- **私信控制面板**: 每个用户都可以通过与机器人私信，使用一个交互式的控制面板来：
+  - 查看所有收到的更新通知。
+  - 管理（查看和取消）所有已订阅的帖子。
+  - 管理（查看和取消）所有已关注的作者。
+- **管理员工具**: 提供查询机器人实时运行状态（CPU、内存、延迟等）的管理指令。
+- **持久化存储**: 所有订阅和关注关系都存储在 MySQL 数据库中，确保数据安全。
+- **容器化部署**: 使用 Docker 和 Docker Compose，实现一键部署和轻松维护。
 
-- **语言**: Python 3.11
-- **核心框架**: `discord.py`
-- **数据库**: MySQL 8.0
-- **部署方案**: Docker & Docker Compose
-- **性能监控**: `psutil`
+## 🚀 指令列表
 
-## 部署指南
+| 指令 | 目标用户 | 描述 | 使用范围 |
+| :--- | :--- | :--- | :--- |
+| `/创建更新推流` | 帖子作者 | 在一个论坛帖子内创建订阅和关注按钮，开启该帖子的更新功能。 | 指定的论坛频道 |
+| `/更新推流` | 帖子作者 | 向所有订阅该帖子或关注该作者的用户推送一条更新通知。 | 已开启更新的帖子 |
+| `/控制面板` | 所有用户 | 打开私人的订阅管理中心，查看更新、管理订阅和关注。 | 与机器人的私信 |
+| `/bot 运行状态` | 机器人管理员 | 查询机器人当前的 CPU、内存、运行时长等详细状态。 | 服务器内 |
 
-本项目被设计为通过Docker进行部署，这确保了环境的一致性和部署的便捷性。
+## 🛠️ 安装与部署
 
-### 前提条件
+本项目设计为使用 Docker 进行部署，大大简化了环境配置的复杂性。
+
+### 先决条件
 
 - [Git](https://git-scm.com/)
 - [Docker](https://www.docker.com/products/docker-desktop/)
 - [Docker Compose](https://docs.docker.com/compose/install/)
 
-### 步骤 1: 克隆项目
+### 配置步骤
 
-```bash
-git clone <你的项目仓库URL>
-cd <项目目录>
-```
+1.  **克隆仓库**
+    ```bash
+    git clone <你的仓库URL>
+    cd <仓库目录>
+    ```
 
-### 步骤 2: 创建Discord应用
+2.  **创建 Discord Bot**
+    - 前往 [Discord Developer Portal](https://discord.com/developers/applications)。
+    - 点击 "New Application" 创建一个新的应用。
+    - 进入 "Bot" 页面，点击 "Add Bot"。
+    - **获取 Token**: 在 Bot 页面点击 "Reset Token" 来获取你的机器人令牌。**这是非常敏感的信息，绝对不要泄露给任何人！**
+    - **开启特权意图 (Privileged Intents)**: 确保 `GUILD MEMBERS INTENT` 是**关闭**的，因为代码中并未请求该权限，保持最小权限原则。代码中 `intents.guilds = True` 是默认权限，无需开启特权。
 
-1.  前往 [Discord Developer Portal](https://discord.com/developers/applications)。
-2.  点击右上角的 **"New Application"** 创建一个新应用。
-3.  进入 **"Bot"** 标签页，点击 **"Add Bot"**。
-4.  在 **"Privileged Gateway Intents"** 部分，开启以下两个权限：
-    - ✅ **PRESENCE INTENT**
-    - ✅ **MESSAGE CONTENT INTENT**
-5.  在Bot页面顶部，点击 **"Reset Token"** 来获取您的机器人令牌（Token），并**立即**将其复制下来。
+3.  **邀请机器人到你的服务器**
+    - 在 Developer Portal 中，进入 "OAuth2" -> "URL Generator"。
+    - 在 "Scopes" 中选择 `bot` 和 `applications.commands`。
+    - 在 "Bot Permissions" 中，授予以下必要的权限：
+      - `View Channels`
+      - `Send Messages`
+      - `Send Messages in Threads`
+      - `Embed Links`
+      - `Read Message History`
+    - 复制生成的URL，在浏览器中打开，然后将机器人邀请到你的目标服务器。
 
-### 步骤 3: 配置环境变量
+4.  **配置环境变量**
+    - 将项目中的 `.env.example.txt` 文件复制一份，并重命名为 `.env`。
+    - 使用文本编辑器打开 `.env` 文件，并根据文件内的注释填入你自己的配置信息。这包括：
+      - 你的 Discord Bot Token (`DISCORD_TOKEN`)
+      - 你的服务器 ID (`TARGET_GUILD_ID`)
+      - 机器人管理员的用户 ID (`ADMIN_IDS`)
+      - 允许使用机器人的论坛频道 ID (`ALLOWED_CHANNELS`)
+      - 数据库密码等。
 
-项目根目录下应该有一个 `.env.example` 文件。请复制它并重命名为 `.env`。
+### 运行机器人
 
-```bash
-cp .env.example .env
-```
+1.  **启动服务**
+    在你的项目根目录下，运行以下命令来构建并启动机器人和数据库容器：
+    ```bash
+    docker-compose up -d --build
+    ```
+    Docker Compose 会自动拉取 MySQL 镜像，构建机器人镜像，并创建持久化数据卷。
 
-然后，编辑 `.env` 文件，填入您自己的配置信息。
+2.  **查看日志**
+    如果你想查看机器人的实时输出或排查问题，可以使用以下命令：
+    ```bash
+    docker-compose logs -f
+    ```
 
-```dotenv
-# 你的discord bot token (从步骤2获取):
-DISCORD_TOKEN=在此填入你的机器人令牌
+3.  **停止服务**
+    要停止机器人和数据库，运行：
+    ```bash
+    docker-compose down
+    ```
+    使用 `-v` 选项会删除数据库数据卷，请谨慎操作：`docker-compose down -v`。
 
-# 你的服务器的 ID
-TARGET_GUILD_ID=在此填入你的Discord服务器ID
+## ⚠️ 重要风险提示
 
-# 管理员ID，多个以英文半角逗号分割，允许查询运行状态
-ADMIN_IDS=在此填入你的用户ID
+### 幽灵提及 (Ghost Ping) 的滥用风险
 
-#---更新推流---
-# 更新推流允许使用的论坛channel id，以英文半角逗号分割
-ALLOWED_CHANNELS=在此填入允许使用机器人的论坛频道ID
+`/更新推流` 功能通过在短时间内发送并删除包含用户提及的消息（即“幽灵提及”）来通知用户。
 
-#嵌入式消息的设置:
-EMBED_TITLE="更新推流Bot"
-EMBED_TEXT="按底下的按钮更改你的订阅"
-EMBED_ERROR="索引创建失败..."
+- **高风险**: **此行为极易被 Discord 的 API 速率限制系统检测为滥用行为**。如果通知的用户数量庞大，高频率的 API 调用（发送、删除、编辑）可能导致你的机器人被 **临时甚至永久封禁**。
+- **建议**:
+  1.  **强烈建议禁用此功能**：在 `.env` 文件中将 `UPDATE_MENTION_DELAY` 设置为一个较大的值（如 `5000`，即5秒），或在代码中移除提及和删除消息的逻辑。
+  2.  **替代方案**: 最安全、最稳定的通知方式是通过 **私信** 通知用户。本机器人已包含私信面板框架，可以基于此进行扩展。
 
-#更新消息的设置{{text}}为作者附带的简单更新log，{{url}}为具体的更新链接，{{author}}为作者的名字:
-UPDATE_TITLE="【更新】"
-UPDATE_TEXT="您关注的帖子发布了一个更新:\n{{author}}->{{text}}\n你可以在这里查看: {{url}}"
-UPDATE_ERROR="UNKOWN ERROR: 更新失败，请联系开发者"
-UPDATE_MENTION_MAX_NUMBER=50 #单次消息提及的人数
+### 数据库 `ON DELETE CASCADE` 风险
 
-#-------------MYSQL配置-------------
-# 通常保持默认即可，Docker Compose会自动处理网络
-MYSQL_HOST=db
-MYSQL_USER=discord_bot
-MYSQL_PASSWORD=请设置一个非常健壮的密码
-MYSQL_ROOT_PASSWORD=请为root设置另一个非常健壮的密码
-MYSQL_DATABASE=discord_bot_db
-MYSQL_PORT=3306
-#数据库连接池大小，可以根据实际需要调整，不可为空
-POOL_SIZE=10
-```
-
-### 步骤 4: 构建并启动服务
-
-在项目根目录下，运行以下命令：
-
-```bash
-# 构建镜像并以后台分离模式启动所有服务
-docker compose up -d --build
-```
-
-第一次构建可能需要一些时间，因为它需要下载基础镜像并安装所有依赖。
-
-### 步骤 5: 邀请机器人到服务器
-
-1.  回到 [Discord Developer Portal](https://discord.com/developers/applications) 并选择您的应用。
-2.  进入 **"OAuth2"** -> **"URL Generator"**。
-3.  在 **"SCOPES"** 列表中，勾选以下两项：
-    - `bot`
-    - `applications.commands`
-4.  在下方出现的 **"BOT PERMISSIONS"** 列表中，选择机器人需要的权限（为方便起见，可以先选择“管理员”）。
-5.  复制页面底部生成的URL，将其粘贴到浏览器中打开，然后选择您的服务器并授权。
-
-### 步骤 6: 查看运行日志
-
-您可以使用以下命令来实时查看机器人应用的日志输出：
-
-```bash
-docker compose logs -f app```
-
-## 指令用法
-
-- `/创建更新推流`
-  - **作用**: 为一个帖子开启更新订阅功能，并发送带有订阅按钮的面板。
-  - **权限**: 只有该帖子的创建者（作者）可以使用。
-  - **用法**: 在一个指定的论坛频道的帖子里直接输入此指令。
-
-- `/更新推流 [update_type] [url] [message]`
-  - **作用**: 发布一个新更新，并通知所有相关的订阅者。
-  - **权限**: 只有该帖子的创建者（作者）可以使用。
-  - **参数**:
-    - `update_type` (必选): 更新类型，选择“发行版(Release)”或“测试版(Test)”。
-    - `url` (必选): 指向本次更新的具体帖子楼层或页面的链接。
-    - `message` (可选): 一段简短的更新描述，不超过400字。
-
-- `/bot 运行状态`
-  - **作用**: 查询机器人当前的CPU、内存、延迟等性能指标。
-  - **权限**: 只有在 `.env` 文件中 `ADMIN_IDS` 列表里的用户可以使用。
-
-## 未来优化方向
-
-- **切换到SQLite**: 对于当前的应用规模，使用嵌入式的SQLite数据库可以完全替代独立的MySQL容器，从而**大幅降低内存占用**（可节省约400MB），并简化部署。
-- **优化Dockerfile**:
-  - **使用Alpine基础镜像**: 将 `FROM python:3.11-slim-bookworm` 切换为 `FROM python:3.11-alpine` 可以显著减小镜像体积和基础内存占用。
-  - **采用多阶段构建**: 分离编译环境和运行环境，确保最终的生产镜像极度纯净、轻量和安全。
-
-## 贡献
-
-欢迎提交PRs和Issues来改进这个项目！
+旧版代码中可能使用了 `ON DELETE CASCADE`。此功能虽然方便，但极其危险，一个用户的删除操作可能引发连锁反应，导致大量相关数据（如所有人的订阅记录）被意外清空。请确保你的数据库表结构已规避此风险（例如，使用 `ON DELETE SET NULL` 或 `ON DELETE RESTRICT`）。
 
 ---
 
