@@ -24,3 +24,6 @@ data/
 # --- 其他操作系统文件 ---
 .DS_Store
 Thumbs.db
+
+# --- other ---
+backup.sh

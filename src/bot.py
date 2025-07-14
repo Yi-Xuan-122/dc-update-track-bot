@@ -23,9 +23,12 @@ class SubscriptionView(ui.View):
     @ui.button(label="订阅发行版", style=discord.ButtonStyle.primary, custom_id="subscribe_release_button") # UI:订阅发行
     async def subscribe_release(self, interaction: discord.Interaction, button: ui.Button):
         bot:"MyBot" = interaction.client
+        user = interaction.user
         user_id = interaction.user.id
         thread_id = interaction.channel.id
         new_status = None
+
+        await check_and_create_user(bot.db_pool,user)
 
         try:
             conn = bot.db_pool.get_connection()
@@ -66,9 +69,12 @@ class SubscriptionView(ui.View):
     @ui.button(label="订阅测试版", style=discord.ButtonStyle.secondary, custom_id="subscribe_test_button") # UI:订阅测试
     async def subscribe_test(self, interaction: discord.Interaction, button: ui.Button):
         bot: "MyBot" = interaction.client
+        user = interaction.user
         user_id = interaction.user.id
         thread_id = interaction.channel.id
         new_status = None
+        
+        await check_and_create_user(bot.db_pool,user)
 
         try:
             conn = bot.db_pool.get_connection()
@@ -108,12 +114,14 @@ class SubscriptionView(ui.View):
     @ui.button(label="关注作者", style=discord.ButtonStyle.success, custom_id="follow_author_button") # UI:关注作者
     async def follow_author(self, interaction: discord.Interaction, button: ui.Button):
         bot: "MyBot" = interaction.client
+        user = interaction.user
         user_id = interaction.user.id
         if not interaction.channel.owner_id:
             await interaction.response.send_message("❌ 无法获取帖子作者信息，请确认帖子作者还在服务器中，或联系开发者", ephemeral=True)
             return
         author_id = interaction.channel.owner_id 
         new_status = None
+        await check_and_create_user(bot.db_pool,user) #因为有交互作者肯定在DB中，只考虑交互者的情况
 
         try:
             conn = bot.db_pool.get_connection()
@@ -151,7 +159,7 @@ class SubscriptionView(ui.View):
 # --- DM:管理关系 ---
 class ManagementPaginatorView(ui.View):
     def __init__(self, bot, user_id, items, item_type):
-        super().__init__(timeout=1800)
+        super().__init__(timeout=300)
         self.bot = bot
         self.user_id = user_id
         self.item_type = item_type
@@ -231,8 +239,12 @@ class ManagementPaginatorView(ui.View):
                     description_text=f"作者 <@{item[1]}>"
                 options.append(discord.SelectOption(label=f"UID: {uid}", value=str(db_id), description=description_text))
             self.select_menu.options = options
-            self.select_menu.max_values = len(options)
             self.delete_button.disabled = False
+        current_options_len = len(self.select_menu.options)
+        if current_options_len <= 1:
+            self.select_menu.max_values = 1
+        else :
+            self.select_menu.max_values = current_options_len
         is_first_page = self.current_page == 0; is_last_page = self.current_page >= self.total_pages
         self.first_page_button.disabled = is_first_page; self.prev_page_button.disabled = is_first_page
         self.next_page_button.disabled = is_last_page; self.last_page_button.disabled = is_last_page
@@ -294,7 +306,7 @@ class ManagementPaginatorView(ui.View):
 # --- DM:查看更新UI ---
 class UpdatesPaginatorView(ui.View):
     def __init__(self, bot_instance, user_id, all_updates):
-        super().__init__(timeout=43200)
+        super().__init__(timeout=300)
         self.bot = bot_instance
         self.user_id = user_id
         self.all_updates = all_updates
@@ -364,7 +376,7 @@ class UpdatesPaginatorView(ui.View):
 # --- DM:用户控制面板UI ---
 class UserPanel(ui.View):
     def __init__(self):
-        super().__init__(timeout=43200)
+        super().__init__(timeout=300)
 
     async def _show_management_panel(self, interaction: discord.Interaction, item_type: str):
         bot: "MyBot" = interaction.client
@@ -531,7 +543,7 @@ class UserPanel(ui.View):
             title=bot.DM_PANEL_TITLE,
             description=description_text,
             color=discord.Color.blurple()
-        ).set_footer(text=f"将在12小时后消失... |At {get_utc8_now_str()}")
+        ).set_footer(text=f"将在5分钟后消失... |At {get_utc8_now_str()}")
         
         # --- 使用 interaction.response.edit_message 更新原始面板 ---
         await interaction.response.edit_message(embed=refreshed_embed, view=self)
@@ -704,7 +716,7 @@ async def manage_subscription_panel(interaction: discord.Interaction):
         title=bot.DM_PANEL_TITLE,
         description=description_text,
         color=discord.Color.blurple()
-    ).set_footer(text=f"将在12小时后消失... |At {get_utc8_now_str()}")
+    ).set_footer(text=f"将在5分钟后消失... |At {get_utc8_now_str()}")
     view = UserPanel()
 
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
