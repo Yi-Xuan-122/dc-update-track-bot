@@ -14,6 +14,5 @@ def main():
     bot = MyBot()
     print("机器人正在启动...")
     bot.run(DISCORD_TOKEN)
-
 if __name__ == "__main__":
     main()
