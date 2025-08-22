@@ -9,6 +9,7 @@ from asyncio import Queue
 import datetime
 import psutil
 import math
+from discord.errors import Forbidden
 
 # --- 时区 ---
 UTC_PLUS_8 = datetime.timezone(datetime.timedelta(hours=8))
@@ -967,7 +968,7 @@ async def create_update_feed(interaction: discord.Interaction):
     except Exception as e:
         print(f"未知错误于 /创建更新推流: {e}")
         await interaction.followup.send(f"❌ Unkown_Error:{e}，请联系开发者...", ephemeral=True)
- 
+     
 @app_commands.command(name="控制面板",description="请在和Bot的私信中使用哦~")
 @app_commands.dm_only()
 async def manage_subscription_panel(interaction: discord.Interaction):
@@ -1084,12 +1085,12 @@ async def update_feed(interaction: discord.Interaction, update_type: app_command
                 await cursor.execute("SELECT * FROM managed_threads WHERE thread_id = %s", (thread.id,))
                 result = await cursor.fetchone()
                 if not result:
-                    await response_message.edit("❌ 这个帖子没有开启更新推流功能，请先使用 /创建更新推流 指令。")
+                    await response_message.edit(content="❌ 这个帖子没有开启更新推流功能，请先使用 /创建更新推流 指令。")
                     return
         
                 thread_owner_id = result[2] #managed_threads的[2]才是author_id
                 if author.id != thread_owner_id:
-                    await response_message.edit("❌ 只有帖子作者可以发送更新推流。")
+                    await response_message.edit(content="❌ 只有帖子作者可以发送更新推流。")
                     return
 
         # 先更新状态
@@ -1360,26 +1361,60 @@ class MyBot(commands.Bot):
             print(f"指令同步时发生严重错误: {e}")
         print("正在启动后台 thread 处理器任务...")
         self.loop.create_task(self.thread_processor_task())
+        if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS == 1:
+            print("启用追踪新帖子功能")
+        else:
+            print("关闭追踪新帖字功能")
 
-    async def thread_processor_task(self):#队列中的thread将在这里发送
+    async def thread_processor_task(self): # 队列中的thread将在这里发送
         await self.wait_until_ready()
         while not self.is_closed():
             try:
                 thread = await self.thread_creation_queue.get()
-                try:
-                    url_buffer = f"https://discord.com/channels/{thread.guild.id}/{thread.id}"
-                    title_buffer = self.TRACK_NEW_THREAD_EMBED_TITLE
-                    text_buffer = self.TRACK_NEW_THREAD_EMBED_TEXT.replace("{{author}}",f"<@{thread.owner_id}>").replace("{{thread_url}}",url_buffer)
-                    embed = discord.Embed(title=title_buffer, description=text_buffer, color=discord.Color.blue()).set_footer(text=f"✅已发送 | At {get_utc8_now_str()}")
-                    await thread.send(embed=embed,view=TrackNewThreadView())
-                except Exception as e:
-                    print(f"处理队列中的 thread 时发送消息失败: {e}")
+                
+                max_attempts = 3
+                attempt_delay = 10
+
+                # 将 embed 的创建放在循环外，避免重复创建
+                url_buffer = f"https://discord.com/channels/{thread.guild.id}/{thread.id}"
+                title_buffer = self.TRACK_NEW_THREAD_EMBED_TITLE
+                text_buffer = self.TRACK_NEW_THREAD_EMBED_TEXT.replace("{{author}}", f"<@{thread.owner_id}>").replace("{{thread_url}}", url_buffer)
+                embed = discord.Embed(title=title_buffer, description=text_buffer, color=discord.Color.blue()).set_footer(text=f"✅已发送 | At {get_utc8_now_str()}")
+
+                for attempt in range(max_attempts):
+                    try:
+                        # 尝试发送
+                        await thread.send(embed=embed, view=TrackNewThreadView())
+                        
+                        # 如果上面这行代码没有报错，说明发送成功了
+                        print(f"✅ 成功向帖子 '{thread.name}' (ID: {thread.id}) 发送消息。")
+                        break  # 成功后必须 break，跳出重试循环
+
+                    except Forbidden as e:
+                        if e.code == 40058: # 只处理 40058 错误
+                            if attempt < max_attempts - 1: # 如果不是最后一次尝试
+                                print(f"⏳ 帖子 {thread.id} 未就绪 (Error 40058)，将在 {attempt_delay} 秒后重试... (尝试 {attempt + 2}/{max_attempts})")
+                                await asyncio.sleep(attempt_delay)
+                            else: # 如果是最后一次尝试
+                                print(f"❌ 在 {max_attempts} 次尝试后，向帖子 {thread.id} 发送消息仍失败 (Error 40058)。")
+                        else:
+                            # 如果是其他 Forbidden 错误，直接报错并跳出循环
+                            print(f"处理帖子 {thread.id} 时遇到未处理的权限错误: {e}")
+                            break
+                    except Exception as e:
+                        # 捕获其他任何异常，直接报错并跳出循环
+                        print(f"处理帖子 {thread.id} 时发送消息失败: {e}")
+                        break
+                
+                # --- 重试逻辑结束 ---
+                
                 self.thread_creation_queue.task_done()
                 await asyncio.sleep(1)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"Thread track Error: {e}")
+                print(f"Thread processor task 发生严重错误: {e}")
 
     async def on_thread_create(self,thread:discord.Thread):
         if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS != 1 :
@@ -1387,7 +1422,6 @@ class MyBot(commands.Bot):
         if thread.parent_id not in self.ALLOWED_CHANNELS:
             return
         await check_and_create_user(self.db_pool, thread.owner_id) #假如是新人第一次发帖
-        
         async with self.db_pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     sql = "SELECT track_new_thread FROM users WHERE user_id = %s"
