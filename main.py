@@ -1,7 +1,6 @@
 import os 
-import discord
 from dotenv import load_dotenv
-from src.bot import MyBot
+from src.bot_app import MyBot
 
 load_dotenv()
 

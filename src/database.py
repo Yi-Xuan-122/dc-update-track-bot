@@ -1,1 +1,141 @@
-#这是为未来的功能提前留下的python代码片段，不需要在意
+import aiomysql
+import asyncio
+from src import config
+
+async def create_db_pool():
+    """创建并返回一个aiomysql数据库连接池，包含重试逻辑"""
+    max_retries = 10
+    retry_delay = 5
+    for i in range(max_retries):
+        try:
+            pool = await aiomysql.create_pool(
+                host='db',
+                user=config.MYSQL_USER,
+                password=config.MYSQL_PASSWORD,
+                db=config.MYSQL_DATABASE,
+                port=3306,
+                minsize=1,
+                maxsize=config.POOL_SIZE,
+                pool_recycle=600,
+                autocommit=False
+            )
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT 1")
+            print("数据库连接池创建成功。")
+            return pool
+        except Exception as err:
+            print(f"数据库连接失败 (尝试 {i+1}/{max_retries}): {err}")
+            if i + 1 == max_retries:
+                print("已达到最大重试次数，无法连接到数据库。")
+                return None
+            print(f"将在 {retry_delay} 秒后重试...")
+            await asyncio.sleep(retry_delay)
+    return None
+
+async def setup_database(pool: aiomysql.pool.Pool):
+    """检查并创建所有需要的数据库表"""
+    print("正在检查并创建数据库表...")
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                # 表1: 用户信息与状态表
+                await cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                        last_checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        track_new_thread BOOLEAN NOT NULL DEFAULT TRUE
+                    );
+                """)
+                # 兼容旧表，检查列是否存在
+                await cursor.execute("""
+                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'track_new_thread'
+                """)
+                if (await cursor.fetchone())[0] == 0:
+                    await cursor.execute("ALTER TABLE users ADD COLUMN track_new_thread BOOLEAN NOT NULL DEFAULT TRUE;")
+
+                # 表2: 被管理的帖子表
+                await cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS managed_threads (
+                        thread_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                        guild_id BIGINT UNSIGNED NOT NULL,
+                        author_id BIGINT UNSIGNED NOT NULL,
+                        last_update_url VARCHAR(255) DEFAULT NULL,
+                        last_update_message TEXT DEFAULT NULL,
+                        last_update_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+                        last_update_type ENUM('release', 'test') DEFAULT NULL,
+                        FOREIGN KEY (author_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    );
+                """)
+                # 表3: 帖子订阅表
+                await cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS thread_subscriptions (
+                        subscription_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        user_id BIGINT UNSIGNED NOT NULL,
+                        thread_id BIGINT UNSIGNED NOT NULL,
+                        subscribe_release BOOLEAN NOT NULL DEFAULT FALSE,
+                        subscribe_test BOOLEAN NOT NULL DEFAULT FALSE,
+                        has_new_update BOOLEAN NOT NULL DEFAULT FALSE,
+                        UNIQUE KEY unique_subscription (user_id, thread_id),
+                        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (thread_id) REFERENCES managed_threads(thread_id) ON DELETE CASCADE
+                    );
+                """)
+                # 表4: 作者关注表
+                await cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS author_follows (
+                        follow_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        follower_id BIGINT UNSIGNED NOT NULL,
+                        author_id BIGINT UNSIGNED NOT NULL,
+                        UNIQUE KEY unique_follow (follower_id, author_id),
+                        FOREIGN KEY (follower_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (author_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    );
+                """)
+                # 表5: 作者动态通知表
+                await cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS follower_thread_notifications (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        follower_id BIGINT UNSIGNED NOT NULL,
+                        thread_id BIGINT UNSIGNED NOT NULL,
+                        UNIQUE KEY unique_notification (follower_id, thread_id),
+                        FOREIGN KEY (follower_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                        FOREIGN KEY (thread_id) REFERENCES managed_threads(thread_id) ON DELETE CASCADE
+                    );
+                """)
+
+                #表6：帖子单独的权限组
+                await cursor.execute("""
+                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                      AND TABLE_NAME = 'managed_threads' 
+                      AND COLUMN_NAME = 'thread_permission_group_1'
+                """)
+                if (await cursor.fetchone())[0] == 0:
+                    print("为 managed_threads 表添加 thread_permission_group 列...")
+                    await cursor.execute("""
+                        ALTER TABLE managed_threads
+                        ADD COLUMN thread_permission_group_1 BIGINT UNSIGNED DEFAULT NULL,
+                        ADD COLUMN thread_permission_group_2 BIGINT UNSIGNED DEFAULT NULL,
+                        ADD COLUMN thread_permission_group_3 BIGINT UNSIGNED DEFAULT NULL,
+                        ADD COLUMN thread_permission_group_4 BIGINT UNSIGNED DEFAULT NULL;
+                    """)
+                    print("权限组列已成功添加。")
+                await conn.commit()
+        print("数据库表结构已确认。")
+    except Exception as err:
+        print(f"数据库建表失败: {err}")
+        raise
+
+async def check_and_create_user(db_pool: aiomysql.pool.Pool, user_id: int):
+    """检查用户是否存在，如果不存在则在数据库中创建"""
+    if not user_id:
+        return
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON DUPLICATE KEY UPDATE user_id = user_id", (user_id,))
+            await conn.commit()
+    except Exception as err:
+        print(f"数据库错误于 check_and_create_user: {err}")

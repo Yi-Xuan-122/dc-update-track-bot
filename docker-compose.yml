@@ -10,7 +10,7 @@ services:
     volumes:
       - .:/workspace
     #--- DVE时取消注释：保存容器运行---
-    #command: sleep infinity
+    command: sleep infinity
     #----------------------------
     depends_on:
       - db
@@ -26,9 +26,9 @@ services:
       - .env
     environment:
     # 设置MySQL初始化数据卷，名称应该为env文件中定义的MYSQL_DATABASE
-      - MYSQL_DATABASE=discord_bot_db
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
     ports:
-      - "3307:3306"
+      - "${MYSQL_PORT}:3306"
     volumes:
       # 使用命名卷来持久化数据库数据
       - db_data:/var/lib/mysql
