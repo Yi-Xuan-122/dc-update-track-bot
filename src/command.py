@@ -324,6 +324,7 @@ async def update_feed(interaction: discord.Interaction, update_type: app_command
                     return
 
         # 先更新状态
+                thread_owner_id = thread.owner_id #fix:修复thread_onwer_id未赋值导致的bug
                 update_thread_sql = """
             UPDATE managed_threads
             SET last_update_url = %s, last_update_message = %s, last_update_at = CURRENT_TIMESTAMP, last_update_type = %s
