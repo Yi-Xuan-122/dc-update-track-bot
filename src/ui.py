@@ -226,10 +226,19 @@ class ManagementPaginatorView(ui.View):
         
         if not self.current_page_items:
             self.select_menu.disabled = True
-            self.select_menu.options = [discord.SelectOption(label="本页无项目", value="disabled")]
+            self.select_menu.options = [
+                discord.SelectOption(
+                    label="目前没有任何项目",
+                    description="目前没有可以操作的项目",
+                    value="placeholder_empty"
+                )
+            ]
+            self.select_menu.max_values = 1
+            self.select_menu.placeholder = "本页无项目"
             self.delete_button.disabled = True
         else:
             self.select_menu.disabled = False
+            self.select_menu.placeholder = "请选择项目..."  
             start_index = self.current_page * self.bot.UPDATES_PER_PAGE
             options = []
             for i, item in enumerate(self.current_page_items):
@@ -257,6 +266,7 @@ class ManagementPaginatorView(ui.View):
         
         self.add_item(self.select_menu)
         self.add_item(self.delete_button)
+
         self.add_item(self.first_page_button)
         self.add_item(self.prev_page_button)
         self.add_item(self.next_page_button)
@@ -293,7 +303,7 @@ class ManagementPaginatorView(ui.View):
             self.total_pages = max(0, (self.total_item_count - 1) // self.bot.UPDATES_PER_PAGE)
             if self.current_page > self.total_pages:
                 self.current_page = self.total_pages
-            
+            self.select_menu.values.clear()
             await self._fetch_page_data()
             self.update_view()
             embed = self.create_embed()
@@ -452,8 +462,15 @@ class UpdatesPaginatorView(ui.View):
             self.select_menu.disabled = False
             self.mark_selected_button.disabled = False
         else:
-            self.select_menu.options = [discord.SelectOption(label="本页无项目", value="disabled")]
+            self.select_menu.options = [    
+                discord.SelectOption(
+                    label="目前没有任何项目",
+                    description="目前没有可以操作的项目",
+                    value="placeholder_empty"
+                )
+            ]
             self.select_menu.max_values = 1
+            self.select_menu.placeholder = "本页无项目"
             self.select_menu.disabled = True
             self.mark_selected_button.disabled = True
         
@@ -582,7 +599,7 @@ class UpdatesPaginatorView(ui.View):
             new_total_pages = max(0, (new_total_items - 1) // self.bot.UPDATES_PER_PAGE)
             if self.current_page > new_total_pages:
                 self.current_page = new_total_pages
-
+            self.select_menu.values.clear()
             await self._update_and_respond(interaction)
 
         except Exception as err:
