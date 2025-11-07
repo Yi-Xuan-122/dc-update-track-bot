@@ -9,9 +9,6 @@ services:
       - .env
     volumes:
       - .:/workspace
-    #--- DVE时取消注释：保存容器运行---
-    #command: sleep infinity
-    #----------------------------
     depends_on:
       - db
     networks:

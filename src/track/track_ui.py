@@ -2,12 +2,13 @@ from __future__ import annotations
 import discord
 from discord import ui
 import aiomysql
-from src.database import check_and_create_user
+from src.track.db import check_and_create_user
 from src.config import get_utc8_now_str
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from main import MyBot
-
+import logging
+log = logging.getLogger(__name__)
 # --- 创建更新推流UI ---
 class SubscriptionView(ui.View):
     def __init__(self):
@@ -41,7 +42,7 @@ class SubscriptionView(ui.View):
                 await conn.commit()
 
         except Exception as err:
-            print(f"数据库错误于[subscribe_release_button]: {err}")
+            logging.error(f"数据库错误于[subscribe_release_button]: {err}")
             if not interaction.response.is_done():
                 await interaction.followup.send(f"❌ SQL_Error:{err}\n数据库操作失败，请稍后再试", ephemeral=True)
             return  
@@ -82,7 +83,7 @@ class SubscriptionView(ui.View):
                 await conn.commit()
 
         except Exception as err:
-            print(f"数据库错误于[subscribe_test_button]: {err}")
+            logging.error(f"数据库错误于[subscribe_test_button]: {err}")
             if not interaction.response.is_done():
                 await interaction.followup.send(f"❌ SQL_Error:{err}\n数据库操作失败，请稍后再试", ephemeral=True)
             return
@@ -125,7 +126,7 @@ class SubscriptionView(ui.View):
                 await conn.commit()
 
         except Exception as err:
-            print(f"数据库错误于[follow_author_button]: {err}")
+            logging.error(f"数据库错误于[follow_author_button]: {err}")
             if not interaction.response.is_done():
                 await interaction.followup.send(f"❌ SQL_Error:{err}\n数据库操作失败，请稍后再试", ephemeral=True)
             return
@@ -195,7 +196,7 @@ class ManagementPaginatorView(ui.View):
                     await cursor.execute(sql, (self.user_id, limit, offset))
                 self.current_page_items = await cursor.fetchall()
         except Exception as e:
-            print(f"Error fetching management page data: {e}")
+            logging.error(f"Error fetching management page data: {e}")
             self.current_page_items = []
 
     def create_embed(self):
@@ -310,7 +311,7 @@ class ManagementPaginatorView(ui.View):
             await interaction.edit_original_response(embed=embed, view=self)
 
         except Exception as err:
-            print(f"数据库错误于 delete_callback: {err}")
+            logging.error(f"数据库错误于 delete_callback: {err}")
             await interaction.followup.send(f"❌ SQL_Error: {err}\n数据库操作失败，请联系开发者", ephemeral=True)
 
     async def page_callback(self, interaction: discord.Interaction):
@@ -423,7 +424,7 @@ class UpdatesPaginatorView(ui.View):
                     await cursor.execute(sql, (self.user_id, self.user_id, limit, offset))
                     self.current_page_items = await cursor.fetchall()
         except Exception as e:
-            print(f"Error fetching page data: {e}")
+            logging.error(f"Error fetching page data: {e}")
             self.current_page_items = []
  
     def update_view(self): #根据当前状态，更新组件属性并决定显示哪些组件 
@@ -544,7 +545,13 @@ class UpdatesPaginatorView(ui.View):
     async def _update_and_respond(self, interaction: discord.Interaction):
         embed = await self.create_embed()
         self.update_view()
-        await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self)
+            else:
+                await interaction.response.edit_message(embed=embed,view=self)
+        except Exception as e:
+            logging.error(f"error in _update_and_respond:{e}")
 
     async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -603,8 +610,8 @@ class UpdatesPaginatorView(ui.View):
             await self._update_and_respond(interaction)
 
         except Exception as err:
-            print(f"数据库错误于 mark_selected: {err}")
-            await interaction.followup.send(f"❌ 数据库操作失败: {err}", ephemeral=True)
+            logging.error(f"数据库错误于 mark_selected: {err}")
+            await interaction.followup.send(f"❌ Error: {err}", ephemeral=True)
 
     async def mark_all_as_read_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -630,7 +637,7 @@ class UpdatesPaginatorView(ui.View):
             await interaction.edit_original_response(embed=embed, view=self)
 
         except Exception as err:
-            print(f"数据库错误于 mark_all_as_read_callback: {err}")
+            logging.error(f"数据库错误于 mark_all_as_read_callback: {err}")
             await interaction.edit_original_response(content=f"❌ 数据库操作失败: {err}", view=None, embed=None)
 
 # --- DM:用户控制面板UI ---
@@ -713,7 +720,7 @@ class UserPanel(ui.View):
                 author_updates_count = (await cursor.fetchone())[0]
 
         except Exception as err:
-            print(f"数据库错误于 view_updates: {err}")
+            logging.error(f"数据库错误于 view_updates: {err}")
             await interaction.followup.send(f"❌ 数据库查询失败：{err}", ephemeral=True)
             return
 
@@ -808,7 +815,7 @@ class TrackNewThreadView(ui.View):
                         await cursor.execute(insert_notification_sql,(thread_id,thread_owner_id))
                 await conn.commit()
         except Exception as e:
-            print(f"数据库错误在track_thread_choice_yes :{e}")
+            logging.error(f"数据库错误在track_thread_choice_yes :{e}")
 
         original_embed = interaction.message.embeds[0]
         original_embed.description = "✅ 操作成功:\n\n已经在下方为您创建订阅入口"
@@ -842,7 +849,7 @@ class TrackNewThreadView(ui.View):
                     await cursor.execute(sql, (user_id,))
                 await conn.commit()
         except Exception as e:
-            print(f"数据库错误于[track_thread_choice_never]: {e}")
+            logging.error(f"数据库错误于[track_thread_choice_never]: {e}")
             await interaction.response.send_message(f"❌ SQL_Error: {e}\n数据库操作失败，请联系开发者。", ephemeral=True)
             return
 
@@ -900,7 +907,7 @@ class AddPermissionModal(discord.ui.Modal, title="添加权限用户"):
         except ValueError:
             await interaction.followup.send("❌ 权限组已满(4/4),无法添加新成员。", ephemeral=True)
         except Exception as e:
-            print(f"在 AddPermissionModal 中发生数据库错误: {e}")
+            logging.error(f"在 AddPermissionModal 中发生数据库错误: {e}")
             await interaction.followup.send("❌ 添加失败，发生内部错误。", ephemeral=True)
 
 # --- 帖子的权限组管理UI ---
@@ -1044,7 +1051,7 @@ class PermissionManageView(discord.ui.View):
                     await self.update_view(interaction,use_followup=True)
 
                 except Exception as e:
-                    print(f"在 remove_callback 中发生数据库错误: {e}")
+                    logging.error(f"在 remove_callback 中发生数据库错误: {e}")
                     await interaction.followup.send("❌ 移除失败，发生内部错误。", ephemeral=True)
 
             button = discord.ui.Button(label="移除", style=discord.ButtonStyle.red, emoji="📤", disabled=True)

@@ -8,7 +8,11 @@
   "service": "app",
 
   "workspaceFolder": "/workspace",
+  
+  "overrideCommand": true,
 
+  "remoteUser": "root"  ,
+  
   "postCreateCommand": "echo '开发环境已就绪！数据库服务名为 \"db\"。'",  
 
   "customizations": {

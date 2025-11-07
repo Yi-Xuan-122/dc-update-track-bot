@@ -7,12 +7,13 @@ import psutil
 import aiomysql
 import asyncio 
 from src.config import get_utc8_now_str , ADMIN_IDS
-from src.ui import SubscriptionView, UserPanel , PermissionManageView
-from src.database import check_and_create_user
+from src.track.track_ui import SubscriptionView, UserPanel , PermissionManageView
+from src.track.db import check_and_create_user
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from main import MyBot
-
+import logging
+log = logging.getLogger(__name__)
 # --- 指令注册函数 ---
 def setup_commands(tree: app_commands.CommandTree, guild: discord.Object):
     """将所有指令添加到指令树中"""
@@ -55,7 +56,7 @@ class CommandGroup_bot(app_commands.Group): #查询BOT运行状态command
         embed.add_field(name="服务中服务器", value=f"`{guild_count} 个`", inline=True)
         days = uptime_delta.days
         hours, remainder = divmod(uptime_delta.seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
+        minutes, = divmod(remainder, 60)
         uptime_str = f"{days}天 {hours}小时 {minutes}分钟"
         embed.add_field(name="运行时长", value=uptime_str, inline=False)
         utc_plus_8 = datetime.timezone(datetime.timedelta(hours=8))
@@ -121,14 +122,14 @@ async def create_update_feed(interaction: discord.Interaction):
                     await cursor.execute(sql, (thread_owner.id,))
                 await conn.commit()
         except Exception as e:
-            print(f"数据库错误于[track_thread_choice_never]: {e}")
+            logging.error(f"数据库错误于[track_thread_choice_never]: {e}")
             await interaction.followup.send(f"❌ SQL_Error: {e}\n数据库操作失败，但已成功创建更新推流。请联系开发者", ephemeral=True)
 
         embed = discord.Embed(title=bot.EMBED_TITLE, description=bot.EMBED_TEXT, color=discord.Color.blue())
         await interaction.followup.send(embed=embed, view=SubscriptionView())
 
     except Exception as e:
-        print(f"未知错误于 /创建更新推流: {e}")
+        logging.error(f"未知错误于 /创建更新推流: {e}")
         await interaction.followup.send(f"❌ Unkown_Error:{e}，请联系开发者...", ephemeral=True)
 
 @app_commands.command(name="查看订阅入口",description="查看当前帖子的订阅入口")
@@ -189,7 +190,7 @@ async def review_subscription(interaction: discord.Interaction):
                         embed.set_footer(text=f"最后一次更新在:{last_update_at} |在下方更改你的订阅状态")
                         await interaction.followup.send(embed=embed,view=SubscriptionView(),ephemeral=True)
     except Exception as e:
-        print(f"未知错误于 /查看订阅入口:{e}")
+        logging.error(f"未知错误于 /查看订阅入口:{e}")
         await interaction.followup.send(f"❌ Unkown_Error:{e},请联系开发者...",ephemeral=True)
 
 
@@ -234,7 +235,7 @@ async def manage_subscription_panel(interaction: discord.Interaction):
                 author_update_count = (await cursor.fetchone())[0]
 
     except Exception as err:
-        print(f"数据库错误于 控制面板 : {err}")
+        logging.error(f"数据库错误于 控制面板 : {err}")
         await interaction.response.send_message("❌ 无法获取您的订阅状态，请稍后重试。", ephemeral=True)
         return
     
@@ -391,7 +392,7 @@ async def update_feed(interaction: discord.Interaction, update_type: app_command
             ghosted_message = await thread.send(mention_string)
             await ghosted_message.delete()
         except discord.Forbidden:
-            print(f"无法发送幽灵提及消息，可能是权限不足。")
+            logging.error(f"无法发送幽灵提及消息，可能是权限不足。")
             update_embed.color = discord.Color.red()
             update_embed.description = "无法发送提及通知，请检查机器人权限。"
             await response_message.edit(embed=update_embed)
@@ -457,7 +458,7 @@ async def manage_permission(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     except Exception as e:
-        print(f"在 /管理当前帖子权限组 出现错误: {e}")
+        logging.error(f"在 /管理当前帖子权限组 出现错误: {e}")
         if not interaction.response.is_done():
             await interaction.response.send_message(f"❌ 未知错误: {e}\n请联系开发者...", ephemeral=True)
         else:

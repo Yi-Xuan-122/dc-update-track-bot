@@ -2,13 +2,16 @@ import discord
 from discord.ext import commands
 from asyncio import Queue
 import datetime
-from src import config , database 
-from src.command import SubscriptionView , setup_commands
-from src.ui import TrackNewThreadView
+from src import config , database
+from src.track.db import setup_database
+from src.track.track_command import SubscriptionView , setup_commands
+from src.track.track_ui import TrackNewThreadView
 from src.config import get_utc8_now_str
 import asyncio
-from src.database import check_and_create_user
+from src.track.db import check_and_create_user
 from discord.errors import Forbidden
+import logging
+log = logging.getLogger(__name__)
 
 # --- 机器人核心类 ---
 class MyBot(commands.Bot):
@@ -43,12 +46,12 @@ class MyBot(commands.Bot):
         # 1. 初始化数据库连接池
         self.db_pool = await database.create_db_pool()
         if not self.db_pool:
-            print("数据库连接失败，机器人无法启动。")
+            logging.critical("数据库连接失败，机器人无法启动。")
             await self.close()
             return
         
         # 2. 自动创建表
-        await database.setup_database(self.db_pool)
+        await setup_database(self.db_pool)
 
         # 3. 注册指令
         target_guild = discord.Object(id=self.TARGET_GUILD_ID)
@@ -60,22 +63,22 @@ class MyBot(commands.Bot):
 
         # 5. 同步指令
         try:
-            print(f"正在尝试将指令同步到服务器 ID: {target_guild.id}...")
+            logging.info(f"正在尝试将指令同步到服务器 ID: {target_guild.id}...")
             synced_commands = await self.tree.sync(guild=target_guild)
             synced_global = await self.tree.sync(guild=None)
-            print(f"成功同步了 {len(synced_commands) + len(synced_global)} 个指令。")
+            logging.info(f"成功同步了 {len(synced_commands) + len(synced_global)} 个指令。")
         except Exception as e:
-            print(f"指令同步时发生严重错误: {e}")
+            logging.critical(f"指令同步时发生严重错误: {e}")
 
         # 6. 启动后台任务
         self.loop.create_task(self.thread_processor_task())
         if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS == 1:
-            print("启用追踪新帖子功能")
+            logging.info("启用追踪新帖子功能")
         else:
-            print("关闭追踪新帖子功能")
+            logging.info("关闭追踪新帖子功能")
 
     async def on_ready(self):
-        print(f'机器人 {self.user} 已成功登录并准备就绪！')
+        logging.info(f'机器人 {self.user} 已成功登录并准备就绪！')
 
     async def on_thread_create(self, thread: discord.Thread):
         if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS != 1:
@@ -111,23 +114,23 @@ class MyBot(commands.Bot):
                             await thread.send(embed=embed, view=TrackNewThreadView())
                             
                             # 如果上面这行代码没有报错，说明发送成功了
-                            print(f"{get_utc8_now_str()}|✅ 成功向帖子 '{thread.name}' (ID: {thread.id}) 发送消息。")
+                            logging.debug(f"{get_utc8_now_str()}|✅ 成功向帖子 '{thread.name}' (ID: {thread.id}) 发送消息。")
                             break  # 成功后必须 break，跳出重试循环
 
                         except Forbidden as e:
                             if e.code == 40058: # 只处理 40058 错误
                                 if attempt < max_attempts - 1: # 如果不是最后一次尝试
-                                    print(f"{get_utc8_now_str()}|⏳ 帖子 {thread.id} 未就绪 (Error 40058)，将在 {attempt_delay} 秒后重试... (尝试 {attempt + 2}/{max_attempts})")
+                                    logging.info(f"{get_utc8_now_str()}|⏳ 帖子 {thread.id} 未就绪 (Error 40058)，将在 {attempt_delay} 秒后重试... (尝试 {attempt + 2}/{max_attempts})")
                                     await asyncio.sleep(attempt_delay)
                                 else: # 如果是最后一次尝试
-                                    print(f"{get_utc8_now_str()}|❌ 在 {max_attempts} 次尝试后，向帖子 {thread.id} 发送消息仍失败 (Error 40058)。")
+                                    logging.error(f"{get_utc8_now_str()}|❌ 在 {max_attempts} 次尝试后，向帖子 {thread.id} 发送消息仍失败 (Error 40058)。")
                             else:
                                 # 如果是其他 Forbidden 错误，直接报错并跳出循环
-                                print(f"{get_utc8_now_str()}|处理帖子 {thread.id} 时遇到未处理的权限错误: {e}")
+                                logging.error(f"{get_utc8_now_str()}|处理帖子 {thread.id} 时遇到未处理的权限错误: {e}")
                                 break
                         except Exception as e:
                             # 捕获其他任何异常，直接报错并跳出循环
-                            print(f"{get_utc8_now_str()}|处理帖子 {thread.id} 时发送消息失败: {e}")
+                            logging.error(f"{get_utc8_now_str()}|处理帖子 {thread.id} 时发送消息失败: {e}")
                             break
                     
                     # --- 重试逻辑结束 ---
@@ -138,7 +141,7 @@ class MyBot(commands.Bot):
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"Thread processor task 发生严重错误: {e}")
+                    logging.critical(f"Thread processor task 发生严重错误: {e}")
 
     async def on_thread_create(self,thread:discord.Thread):
         if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS != 1 :
@@ -155,7 +158,7 @@ class MyBot(commands.Bot):
                         try:
                             await self.thread_creation_queue.put(thread) #压入队列
                         except Exception as e:
-                            print(f"Error:{e}")
+                            logging.critical(f"Error:{e}")
                 await conn.commit()
 
 if __name__ == "__main__":
