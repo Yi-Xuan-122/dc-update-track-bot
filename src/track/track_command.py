@@ -56,7 +56,7 @@ class CommandGroup_bot(app_commands.Group): #查询BOT运行状态command
         embed.add_field(name="服务中服务器", value=f"`{guild_count} 个`", inline=True)
         days = uptime_delta.days
         hours, remainder = divmod(uptime_delta.seconds, 3600)
-        minutes, = divmod(remainder, 60)
+        minutes, _ = divmod(remainder, 60)
         uptime_str = f"{days}天 {hours}小时 {minutes}分钟"
         embed.add_field(name="运行时长", value=uptime_str, inline=False)
         utc_plus_8 = datetime.timezone(datetime.timedelta(hours=8))

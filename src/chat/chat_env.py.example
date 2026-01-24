@@ -1,0 +1,4 @@
+SYSTEM_PROMPT="""
+
+"""
+system_prompt = {"role":"system","content":SYSTEM_PROMPT}

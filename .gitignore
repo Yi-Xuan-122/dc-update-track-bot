@@ -27,3 +27,6 @@ Thumbs.db
 
 # --- other ---
 backup.sh
+summary_env.py
+chat_env.py
+test.py

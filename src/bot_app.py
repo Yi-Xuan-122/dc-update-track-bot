@@ -6,12 +6,14 @@ from src import config , database
 from src.track.db import setup_database
 from src.track.track_command import SubscriptionView , setup_commands
 from src.track.track_ui import TrackNewThreadView
-from src.config import get_utc8_now_str
+from src.config import get_utc8_now_str ,SUMMARY_SETUP,LLM_CHAT_SETUP
+from src.chat.chat_src import LLM_Chat
 import asyncio
 from src.track.db import check_and_create_user
 from discord.errors import Forbidden
 import logging
 log = logging.getLogger(__name__)
+from src.summary.summary_command import summarizerCog
 
 # --- 机器人核心类 ---
 class MyBot(commands.Bot):
@@ -43,6 +45,15 @@ class MyBot(commands.Bot):
         self.TRACK_NEW_THREAD_EMBED_TEXT = config.TRACK_NEW_THREAD_EMBED_TEXT
 
     async def setup_hook(self):
+        # 0.启动COG模块
+        if SUMMARY_SETUP == 1 :
+            await self.add_cog(summarizerCog(self))
+            logging.info("开启Summary功能")
+        if LLM_CHAT_SETUP == 1:
+            await self.add_cog(LLM_Chat(self))
+            logging.info("开启LLM_Chat功能")
+        
+
         # 1. 初始化数据库连接池
         self.db_pool = await database.create_db_pool()
         if not self.db_pool:
@@ -160,6 +171,7 @@ class MyBot(commands.Bot):
                         except Exception as e:
                             logging.critical(f"Error:{e}")
                 await conn.commit()
+
 
 if __name__ == "__main__":
     bot = MyBot()

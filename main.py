@@ -4,6 +4,7 @@ from src.bot_app import MyBot
 import logging
 import logging.handlers
 import sys
+
 # --- LOGGING CONFIG
 logger = logging.getLogger()
 log_format = logging.Formatter(

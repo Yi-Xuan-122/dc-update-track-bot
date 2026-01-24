@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 import datetime
+import logging
+log = logging.getLogger(__name__)
 # 加载 .env 文件
 load_dotenv()
 
@@ -38,6 +40,36 @@ MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
 MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 POOL_SIZE = int(os.getenv("POOL_SIZE", 10))
 
+# --- LLM config ---
+SUMMARY_SETUP = int(os.getenv("SUMMARY_SETUP",0))
+BASE_URL = os.getenv('BASE_URL')
+MODEL = os.getenv('MODEL')
+LLM_FORMAT = os.getenv("LLM_FORMAT", "openai")
+if int(os.getenv('IMG_VIEW')) == 1:
+    IMG_VIEW = True
+else:
+    IMG_VIEW = False
+ADDITIONAL_HEADER = os.getenv('ADDITIONAL_HEADER')
+BODY_ARGUMENT = os.getenv('BODY_ARGUMENT')
+LLM_ALLOW_CHANNELS = [int(c.strip()) for c in os.getenv("LLM_ALLOW_CHANNELS").split(",")]
+LLM_CHAT_SETUP = int(os.getenv("LLM_CHAT_SETUP",0))
+
+# --- summary config ---
+utc_zone_str = os.getenv('UTC_ZONE')
+if utc_zone_str is None:
+    logging.warning("UTC_ZONE not set or invaild. UTC_ZONE will be set 0")
+    UTC_ZONE = 0
+else:
+    try:
+        UTC_ZONE = int(utc_zone_str)
+        if UTC_ZONE<-12 or UTC_ZONE>12:
+            logging.warning("UTC_ZONE invaild. UTC_ZONE will be set 0")
+            UTC_ZONE = 0
+    except ValueError as e:
+        logging.warning("UTC_ZONE invaild. UTC_ZONE will be set 0")
+
 UTC_PLUS_8 = datetime.timezone(datetime.timedelta(hours=8))
 def get_utc8_now_str():
     return datetime.datetime.now(UTC_PLUS_8).strftime("%Y-%m-%d %H:%M:%S")
+
+print(f"DEBUG: BASE_URL is {os.getenv('BASE_URL')}")
