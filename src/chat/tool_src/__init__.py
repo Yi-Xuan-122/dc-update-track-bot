@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 from src.chat.tool_src.tool_base import BaseTool
 # 导入具体工具
 from src.chat.tool_src.custom_tool.searxng import SearxngTool
+from src.chat.tool_src.custom_tool.WebPageContextTool import WebPageContextTool
 from src.chat.chat_env import ENABLE_CUSTOM_TOOLS
 
 class ToolManager:
@@ -10,6 +11,7 @@ class ToolManager:
         self.tools: Dict[str, BaseTool] = {}
         if ENABLE_CUSTOM_TOOLS:
             self.register(SearxngTool())
+            self.register(WebPageContextTool())
 
     def register(self, tool: BaseTool):
         self.tools[tool.name] = tool

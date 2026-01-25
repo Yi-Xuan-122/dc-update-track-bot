@@ -103,7 +103,7 @@ class LLM_Chat(commands.Cog):
                         }
                     })
                     # 插入最后一条的消息
-                    payload_list.insert(1,{
+                    payload_list.append({
                         "role": 'model',
                         "parts": [ { "text": CUSTOM_PROMPT_1 } ]
                     })
@@ -139,8 +139,31 @@ class LLM_Chat(commands.Cog):
                     self.log.debug(llm_result)
                     self.log.debug("===== END RAW LLM RESULT =====")
 
-                    # ---------- 4. 普通文本回复 ----------
-                    result_type = llm_result.get("type")
+                    # 即使 llm_result['type'] 是 text，只要 raw 里有 functionCall，就是工具调用
+                    raw_candidates = llm_result.get("raw", {}).get("candidates", [])
+                    found_function_call_part = None
+                    raw_parts_list = []
+
+                    if raw_candidates:
+                        raw_parts_list = raw_candidates[0].get("content", {}).get("parts", [])
+                        for part in raw_parts_list:
+                            if "functionCall" in part:
+                                found_function_call_part = part
+                                break
+
+                    if found_function_call_part:
+                        result_type = "tool_call"
+                        
+                        func_name = found_function_call_part["functionCall"]["name"]
+                        func_args = found_function_call_part["functionCall"]["args"]
+                        
+                        original_parts = raw_parts_list 
+                    else:
+                        result_type = llm_result.get("type")
+                        original_parts = None
+
+
+                    # ---------- 4. 普通文本回复 (只有明确不是工具调用时才进这里) ----------
                     if result_type == "text":
                         response_chunks = llm_result["chunks"]
                         usage = parse_gemini_usage(llm_result.get("raw", {}))
@@ -153,6 +176,16 @@ class LLM_Chat(commands.Cog):
                         if "System Seed:" in reply_content:
                             reply_content = reply_content.split("System Seed:")[0]
 
+                        # 处理思维链标签
+                        if "</think>" in reply_content:
+                            # 贪婪匹配：取最后一个 </think> 之后的内容
+                            reply_content = reply_content.rsplit("</think>", 1)[1].strip()
+                        
+                        # 如果内容为空（比如只有思考没有正文），这里可以做一个兜底或者打断
+                        # 但通常 text 类型到这里就该结束了
+                        if not reply_content:
+                            reply_content = "*(模型仅输出了思考过程，未生成回复内容)*"
+
                         reply_content += (
                             f"\n\n-# Time:{latency_s}s | "
                             f"In:{usage['input_tokens']}t | "
@@ -164,9 +197,12 @@ class LLM_Chat(commands.Cog):
 
                     # ---------- 5. Tool 调用 ----------
                     if result_type == "tool_call":
-                        func_name = llm_result["name"]
-                        func_args = llm_result["args"]
-                        original_parts = llm_result.get("parts_trace")
+                        # 注意：func_name 和 func_args 已经在上面的检测逻辑中赋值了
+                        # 如果没有在上面赋值（即走了原本的 tool_call 分支），尝试从 llm_result 获取
+                        if 'func_name' not in locals():
+                            func_name = llm_result["name"]
+                            func_args = llm_result["args"]
+                            original_parts = llm_result.get("parts_trace")
 
                         self.log.info(f"Tool Call → {func_name}({func_args})")
 
@@ -175,13 +211,14 @@ class LLM_Chat(commands.Cog):
                             func_args
                         )
 
+                        # 将原始的（包含思考过程的）Model 响应加入历史
                         if original_parts:
                             payload_list.append({
                                 "role": "model",
                                 "parts": original_parts 
                             })
                         else:
-                            # 兜底
+                            # 兜底：如果没抓到 parts，手动构建
                             payload_list.append({
                                 "role": "model",
                                 "parts": [{
@@ -191,6 +228,8 @@ class LLM_Chat(commands.Cog):
                                     }
                                 }]
                             })
+
+                        # 处理工具返回结果
                         if tool_result.get("results"):
                             payload_list.append({
                                 "role": "function",

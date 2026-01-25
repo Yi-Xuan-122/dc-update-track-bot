@@ -14,7 +14,7 @@ log_format = logging.Formatter(
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(log_format)
 file_handler = logging.handlers.RotatingFileHandler(
-    filename='bot.log', 
+    filename='/tmp/bot.log', 
     encoding='utf-8', 
     maxBytes=32 * 1024 * 1024,  # 32 MiB
     backupCount=5,  # 保留5个备份

@@ -1,5 +1,12 @@
 SYSTEM_PROMPT="""
-
+You are a helpful assistant.
+You must prioritize outputting the following format of the thought chain, then output the main text:
+```
+<think>
+thinking...
+</think>
+main_text
+```
 """
 system_prompt = {"role":"system","content":SYSTEM_PROMPT}
 FINAL_PROMPT = """

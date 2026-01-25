@@ -18,6 +18,7 @@ env/
 .vscode/
 
 # --- Docker 缓存和数据 ---
+*.log.*
 *.log
 data/
 

@@ -1,6 +1,5 @@
 import httpx
 import logging
-from collections import defaultdict
 from src.chat.tool_src.tool_base import BaseTool
 from src.chat.chat_env import SEARXNG_URL
 
