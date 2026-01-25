@@ -128,31 +128,63 @@ class LLM():
             try:
                 data = response.json()
                 if config.LLM_FORMAT == "gemini":
+                    # ---------- Gemini 格式解析修复 ----------
+                    
+                    # 1. 检查 candidates 是否存在
                     if "candidates" not in data or not data["candidates"]:
-                        # 处理空返回或被过滤的情况
                         return {"type": "text", "chunks": ["(无响应/内容被安全策略过滤)"], "raw": data}
-                    candidate = data["candidates"][0]["content"]["parts"][0]
-                    candidate_content = data["candidates"][0]["content"]
-                    parts = candidate_content.get("parts", [])
+                    
+                    first_candidate = data["candidates"][0]
+                    content_obj = first_candidate.get("content", {})
+                    
+                    # 2. 安全获取 parts (这是修复 KeyError 的关键)
+                    parts = content_obj.get("parts", [])
 
-                    # 1. 检查是否是函数调用 (Function Call)
-                    if "functionCall" in candidate:
-                        fc = candidate["functionCall"]
+                    # 3. 检查 parts 是否为空 (处理 SAFETY 或其他异常结束)
+                    if not parts:
+                        finish_reason = first_candidate.get("finishReason", "UNKNOWN")
+                        log.warning(f"Gemini returned empty parts. FinishReason: {finish_reason}")
+                        
+                        # 如果是因为安全原因被拦截，通常 finishReason 是 "SAFETY"
+                        fallback_text = f"(模型未返回内容，结束原因: {finish_reason})"
+                        return {
+                            "type": "text",
+                            "chunks": [fallback_text],
+                            "raw": data,
+                            "text": fallback_text
+                        }
+
+                    # 4. 智能查找 Function Call
+                    # 不再硬编码取 parts[0]，而是遍历 parts 查找是否有 functionCall
+                    # 这样可以完美兼容 [TextPart(思考), FunctionCallPart(调用)] 的结构
+                    function_call_part = None
+                    for part in parts:
+                        if "functionCall" in part:
+                            function_call_part = part
+                            break
+
+                    if function_call_part:
+                        fc = function_call_part["functionCall"]
                         return {
                             "type": "tool_call",
                             "name": fc["name"],
                             "args": fc["args"],
-                            "parts_trace": parts,
+                            "parts_trace": parts, # 必须返回完整的 parts 列表，用于保持上下文连贯
                             "raw": data
                         }
                     
-                    # 2. 普通文本
-                    content = candidate.get("text", "")
+                    # 5. 如果没有工具调用，则拼接所有文本内容
+                    content = "".join([p.get("text", "") for p in parts])
+
                 else:
+                    # OpenAI / 其他格式
                     content = data.get("choices",[{}])[0].get("message", {}).get("content", "")
+
             except Exception as e:
-                log.error(f"Failed parsing response: {e}")
-                raise ValueError(f"Invalid response format")
+                # 打印更详细的错误日志以便排查
+                log.error(f"Failed parsing response. Data snippet: {str(data)[:200]}")
+                log.error(f"Exception: {e}", exc_info=True)
+                raise ValueError(f"Invalid response format: {e}")
 
             chunk_size = 1800
             chunks = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]

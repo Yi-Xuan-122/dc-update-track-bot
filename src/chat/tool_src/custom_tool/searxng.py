@@ -22,8 +22,9 @@ class SearxngTool(BaseTool):
     @property
     def description(self):
         return (
-            "在互联网上搜索信息。适用于查询事实、文档、社区讨论或最新信息。"
-            "请在需要外部信息时使用。"
+            "在互联网上搜索信息。返回结果仅包含简短摘要和URL。"
+            "如果摘要中的信息不完整（例如正文被截断），请务必提取结果中的 URL，"
+            "并调用 webpage_context 工具读取网页完整内容以获取详情。"
         )
 
     @property
@@ -40,7 +41,7 @@ class SearxngTool(BaseTool):
             },
             "time_range": {
                 "type": "STRING",
-                "description": "可选。时间范围: day, week, month, year"
+                "description": "可选。时间范围: day, week, month, year。若不限时间则留空。"
             },
             "max_results": {
                 "type": "INTEGER",
@@ -108,8 +109,8 @@ class SearxngTool(BaseTool):
             snippet = (item.get("content") or item.get("snippet") or "").strip()
             snippet = snippet.replace("\n", " ").replace("\r", " ")
 
-            if len(snippet) > 300:
-                snippet = snippet[:300] + "..."
+            if len(snippet) > 500:
+                snippet = snippet[:500] + "..."
             else:
                 # 不够的话，用原长度全部保留
                 snippet = snippet
