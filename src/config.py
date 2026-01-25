@@ -53,6 +53,10 @@ ADDITIONAL_HEADER = os.getenv('ADDITIONAL_HEADER')
 BODY_ARGUMENT = os.getenv('BODY_ARGUMENT')
 LLM_ALLOW_CHANNELS = [int(c.strip()) for c in os.getenv("LLM_ALLOW_CHANNELS").split(",")]
 LLM_CHAT_SETUP = int(os.getenv("LLM_CHAT_SETUP",0))
+if int(os.getenv('GEMINI_SEARCH', 0)) == 1:
+    GEMINI_SEARCH = True
+else:
+    GEMINI_SEARCH = False
 
 # --- summary config ---
 utc_zone_str = os.getenv('UTC_ZONE')

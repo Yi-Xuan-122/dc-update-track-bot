@@ -156,7 +156,8 @@ class summarizerCog(commands.Cog):
             llm_input_json = json.dumps(payload_list, ensure_ascii=False)
             logging.debug(f"llm_input_json:\n {llm_input_json}")
             try:
-                summary_chunks = await self.llm.llm_call(llm_input_json)
+                llm_result = await self.llm.llm_call(llm_input_json)
+                summary_chunks = llm_result["chunks"]
                 if not summary_chunks:
                     await interaction.edit_original_response(content="❌ | AI 未能生成任何总结内容。")
                     return

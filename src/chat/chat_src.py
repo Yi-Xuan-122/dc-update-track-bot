@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 import logging
 import json
-from src.chat.chat_env import system_prompt , SYSTEM_PROMPT
+from src.chat.chat_env import system_prompt , SYSTEM_PROMPT,CUSTOM_PROMPT_1
 from src.config import ADMIN_IDS
 from src.chat.gemini_format import gemini_format_callback
 from src.config import LLM_FORMAT , LLM_ALLOW_CHANNELS ,ADMIN_IDS
@@ -10,6 +10,7 @@ from src.chat.chat_aux import parse_message_history_to_prompt
 from src.llm import LLM
 from src.summary.summary_aux import RateLimitingScheduler
 import time
+from src.chat.tool_src import tool_manager
 class LLM_Chat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -62,32 +63,29 @@ class LLM_Chat(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # 1. 基础过滤：不回复自己，不回复其他机器人
+        # ---------- 基础过滤 ----------
         if message.author.bot:
             return
 
-        # 2. 频道鉴权
         if not self.is_channel_allowed(message.channel):
             return
 
-        # 3. 触发检测
         if not self.is_triggered(message):
             return
 
-        # --- 开始处理 ---
-        try:
-            # 显示 "正在输入..." 状态，提升用户体验
-            async with message.channel.typing():
-                
-                # 4. 获取上下文
-                # 获取最近的 30 条消息作为上下文 (包含当前这条触发消息)
-                # history 返回的是倒序的 (最新的在前)，我们需要把它正序排列
-                history_messages = [msg async for msg in message.channel.history(limit=30)]
-                history_messages.reverse() 
+        max_tool_rounds = 8
+        current_round = 0
 
-                # 5. 构建 Prompt (复用 summary 的核心函数)
-                # 注意：这里不需要传入 members 列表，因为聊天模式下我们需要看到所有人的发言
-                
+        try:
+            async with message.channel.typing():
+
+                # ---------- 1. 拉取上下文 ----------
+                history_messages = [
+                    msg async for msg in message.channel.history(limit=30)
+                ]
+                history_messages.reverse()
+
+                # ---------- 2. 构建 Prompt ----------
                 if LLM_FORMAT == "gemini":
                     final_data = await parse_message_history_to_prompt(
                         message=history_messages,
@@ -95,59 +93,145 @@ class LLM_Chat(commands.Cog):
                         bot_user=self.bot.user,
                         admin_ids=ADMIN_IDS
                     )
+
                     payload_list = final_data.get("contents", [])
 
-                    gemini_system = {
+                    # Gemini systemInstruction（伪装，后续在 llm_call 拆）
+                    payload_list.insert(0, {
                         "systemInstruction": {
                             "parts": [{"text": SYSTEM_PROMPT}]
                         }
-                    }
-                    # 这里为了兼容性，我们将 system prompt 伪装成第一条消息，稍后在 llm.py 中提取
-                    payload_list.insert(0, gemini_system)
-                    
+                    })
+                    # 插入最后一条的消息
+                    payload_list.insert(1,{
+                        "role": 'model',
+                        "parts": [ { "text": CUSTOM_PROMPT_1 } ]
+                    })
+
                 else:
-                    # OpenAI 格式
-                    final_prompt = await parse_message_history_to_prompt(
+                    final_data = await parse_message_history_to_prompt(
                         message=history_messages,
                         post_processing_callback=gemini_format_callback,
                         bot_user=self.bot.user,
                         admin_ids=ADMIN_IDS
                     )
-                    payload_list = final_prompt.get("messages", [])
-                    system_payload = {"role": "system", "content": SYSTEM_PROMPT}
-                    payload_list.insert(0, system_payload)
 
-                # 6. 调用 LLM
-                llm_input_json = json.dumps(payload_list, ensure_ascii=False)
-                self.log.debug(f"Chat Playload:\n{llm_input_json}")
+                    payload_list = final_data.get("messages", [])
+                    payload_list.insert(0, {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    })
+
+                # ---------- 3. Tool / LLM 循环 ----------
                 start_ts = time.time()
-                llm_result = await self.llm.llm_call(llm_input_json)
-                response_chunks = llm_result["chunks"]
-                usage = parse_gemini_usage(llm_result["raw"])
-                input_tokens = usage["input_tokens"]
-                output_tokens = usage["output_tokens"]
-                elapsed = time.time() - start_ts
-                latency_s = round(elapsed, 3)
 
-                if not response_chunks:
-                    await message.reply("*(...似乎陷入了沉思，没有回应...)*")
-                    return
+                while current_round < max_tool_rounds:
+                    current_round += 1
 
-                # 7. 发送回复
-                # 通常聊天回复比较短，取第一个 chunk 即可。
-                # 如果很长，可以分段发送
-                reply_content = response_chunks[0] + f"\n\n-# Time:{latency_s}s | In :{input_tokens}t | Out :{output_tokens}t"
-                
-                if "System Seed:" in reply_content:
-                    reply_content = reply_content.split("System Seed:")[0]
+                    llm_input_json = json.dumps(payload_list, ensure_ascii=False)
+                    self.log.debug(f"LLM Payload:\n{llm_input_json}")
 
-                # 回复用户
-                await message.reply(reply_content, mention_author=False)
+                    llm_result = await self.llm.llm_call(
+                        llm_input_json,
+                        include_tools=True
+                    )
+                    self.log.debug("===== RAW LLM RESULT =====")
+                    self.log.debug(llm_result)
+                    self.log.debug("===== END RAW LLM RESULT =====")
+
+                    # ---------- 4. 普通文本回复 ----------
+                    result_type = llm_result.get("type")
+                    if result_type == "text":
+                        response_chunks = llm_result["chunks"]
+                        usage = parse_gemini_usage(llm_result.get("raw", {}))
+
+                        elapsed = time.time() - start_ts
+                        latency_s = round(elapsed, 3)
+
+                        reply_content = response_chunks[0]
+
+                        if "System Seed:" in reply_content:
+                            reply_content = reply_content.split("System Seed:")[0]
+
+                        reply_content += (
+                            f"\n\n-# Time:{latency_s}s | "
+                            f"In:{usage['input_tokens']}t | "
+                            f"Out:{usage['output_tokens']}t"
+                        )
+
+                        await message.reply(reply_content, mention_author=False)
+                        return
+
+                    # ---------- 5. Tool 调用 ----------
+                    if result_type == "tool_call":
+                        func_name = llm_result["name"]
+                        func_args = llm_result["args"]
+                        original_parts = llm_result.get("parts_trace")
+
+                        self.log.info(f"Tool Call → {func_name}({func_args})")
+
+                        tool_result = await tool_manager.handle_tool_call(
+                            func_name,
+                            func_args
+                        )
+
+                        if original_parts:
+                            payload_list.append({
+                                "role": "model",
+                                "parts": original_parts 
+                            })
+                        else:
+                            # 兜底
+                            payload_list.append({
+                                "role": "model",
+                                "parts": [{
+                                    "functionCall": {
+                                        "name": func_name,
+                                        "args": func_args
+                                    }
+                                }]
+                            })
+                        if tool_result.get("results"):
+                            payload_list.append({
+                                "role": "function",
+                                "parts": [{
+                                    "functionResponse": {
+                                        "name": func_name,
+                                        "response": {
+                                            "content": tool_result
+                                        }
+                                    }
+                                }]
+                            })
+                        else:
+                            payload_list.append({
+                                "role": "function",
+                                "parts": [{
+                                    "functionResponse": {
+                                        "name": func_name,
+                                        "response": {
+                                            "content": {
+                                                "query": func_args.get("query"),
+                                                "results": [],
+                                                "notice": "⚠️ 没有找到匹配结果"
+                                            }
+                                        }
+                                    }
+                                }]
+                            })
+
+                        continue
+
+                # ---------- 6. 兜底 ----------
+                await message.reply(
+                    "*(思考好像绕进死胡同了…要不换个问法？)*",
+                    mention_author=False
+                )
 
         except Exception as e:
             self.log.error(f"Chat processing error: {e}", exc_info=True)
-            # 聊天模式下出错通常不发报错信息给用户，以免打断沉浸感，或者发个简单的表情
             await message.add_reaction("😵")
+
 
 def parse_gemini_usage(resp: dict) -> dict:
     usage = resp.get("usageMetadata", {})
@@ -158,3 +242,11 @@ def parse_gemini_usage(resp: dict) -> dict:
         "thought_tokens": usage.get("thoughtsTokenCount", 0),
         "total_tokens": usage.get("totalTokenCount", 0),
     }
+
+async def get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
+    webhooks = await channel.webhooks()
+    for wh in webhooks:
+        if wh.name == "LLM-Chat":
+            return wh
+
+    return await channel.create_webhook(name="LLM-Chat")

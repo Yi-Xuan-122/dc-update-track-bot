@@ -5,6 +5,7 @@ import logging
 import json
 log = logging.getLogger(__name__)
 import copy
+from src.chat.tool_src import tool_manager
 
 def parse_yaml(text:str)->dict:
     if not text or not text.strip():
@@ -55,7 +56,7 @@ class LLM():
             logging.critical(f"Critical in LLM(__init__):{e}")
             raise
 
-    async def llm_call(self,text:str)-> list[str]:
+    async def llm_call(self,text:str,include_tools: bool = False)-> list[str]:
         #我们期望获得一个JSON包装的text
         try:
             payload_data = json.loads(text)
@@ -77,7 +78,7 @@ class LLM():
             final_contents = []
             system_instruction_payload = None
 
-            # 遍历 payload_data，分离 System Instruction 和 普通 Content
+            # 1. 分离 systemInstruction 和 contents
             for item in payload_data:
                 if "systemInstruction" in item:
                     system_instruction_payload = item["systemInstruction"]
@@ -86,9 +87,22 @@ class LLM():
             
             body["contents"] = final_contents
             
-            # 如果提取到了 systemInstruction，放到 Body 根节点
+            # 2. 注入 systemInstruction
             if system_instruction_payload:
                 body["systemInstruction"] = system_instruction_payload
+
+            # 3. 注入 Google Search 工具
+            if config.GEMINI_SEARCH:
+                body["tools"] = [
+                    {"google_search": {}}
+                ]
+
+            # 4. 注入自定义tool
+            if not config.GEMINI_SEARCH and config.LLM_FORMAT == "gemini" and include_tools:
+                tools_payload = tool_manager.get_gemini_tools_payload()
+            if tools_payload:
+                body["tools"] = tools_payload
+
         else:
             body["messages"] = payload_data
         if body.get("stream"):
@@ -113,9 +127,27 @@ class LLM():
                 raise RuntimeError(e)
             try:
                 data = response.json()
-                # Gemini 的返回路径通常是 candidates[0].content.parts[0].text
                 if config.LLM_FORMAT == "gemini":
-                    content = data["candidates"][0]["content"]["parts"][0]["text"]
+                    if "candidates" not in data or not data["candidates"]:
+                        # 处理空返回或被过滤的情况
+                        return {"type": "text", "chunks": ["(无响应/内容被安全策略过滤)"], "raw": data}
+                    candidate = data["candidates"][0]["content"]["parts"][0]
+                    candidate_content = data["candidates"][0]["content"]
+                    parts = candidate_content.get("parts", [])
+
+                    # 1. 检查是否是函数调用 (Function Call)
+                    if "functionCall" in candidate:
+                        fc = candidate["functionCall"]
+                        return {
+                            "type": "tool_call",
+                            "name": fc["name"],
+                            "args": fc["args"],
+                            "parts_trace": parts,
+                            "raw": data
+                        }
+                    
+                    # 2. 普通文本
+                    content = candidate.get("text", "")
                 else:
                     content = data.get("choices",[{}])[0].get("message", {}).get("content", "")
             except Exception as e:
@@ -125,6 +157,7 @@ class LLM():
             chunk_size = 1800
             chunks = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]
             return {
+                "type": "text",
                 "chunks": chunks,
                 "raw": data,
                 "text": content,

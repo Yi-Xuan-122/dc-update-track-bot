@@ -2,3 +2,13 @@ SYSTEM_PROMPT="""
 
 """
 system_prompt = {"role":"system","content":SYSTEM_PROMPT}
+FINAL_PROMPT = """
+
+"""
+final_prompt = {"role":"<custom:system/user/assistant>","content":FINAL_PROMPT} #openai
+# 1开启自定义工具，0关闭
+ENABLE_CUSTOM_TOOLS=1
+# ---CUSTOM_TOOLS CONFIG START---
+# SearXNG ---for example
+SEARXNG_URL="http://host.docker.internal:<your_searxng_port>"
+# ---CUSTOM_TOOLS CONFIG END---

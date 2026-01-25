@@ -111,7 +111,7 @@ async def parse_message_history_to_prompt(message:List[discord.Message],post_pro
         message_id_hash[items.id] = f"[reply to -> '{short_text}' from {nickname}(At {convert_to_local_timezone(current_time)})] "
 
     #结束for循环，说明聊天记录已全部封装入一个user input
-    member_list_parts = [f"\n\n[System Seed:{Seed}]: ---聊天记录结束---", "<members_list>"]
+    member_list_parts = [f"[System Seed:{Seed}:当前时间:{convert_to_local_timezone(current_time)}]\n\n[System Seed:{Seed}]: ---聊天记录结束---\n", "<members_list>"]
     for m_id, m_name in seen_members.items():
         member_list_parts.append(f"<display_name=\"{m_name}\">:\"{m_id}\"")
     member_list_parts.append("</members_list>")
