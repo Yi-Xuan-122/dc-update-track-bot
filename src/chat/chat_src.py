@@ -2,15 +2,18 @@ import discord
 from discord.ext import commands
 import logging
 import json
+import re
 from src.chat.chat_env import system_prompt , SYSTEM_PROMPT,CUSTOM_PROMPT_1
-from src.config import ADMIN_IDS
+from src.config import ADMIN_IDS, GEMINI_TOOL_CALL
 from src.chat.gemini_format import gemini_format_callback
 from src.config import LLM_FORMAT , LLM_ALLOW_CHANNELS ,ADMIN_IDS
 from src.chat.chat_aux import parse_message_history_to_prompt
+from src.summary.summary_aux import openai_format
 from src.llm import LLM
 from src.summary.summary_aux import RateLimitingScheduler
 import time
 from src.chat.tool_src import tool_manager
+
 class LLM_Chat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -31,7 +34,6 @@ class LLM_Chat(commands.Cog):
             self.cache_task.cancel()
 
     def is_channel_allowed(self, channel):
-        """检查频道权限（支持子区）"""
         if channel.id in LLM_ALLOW_CHANNELS:
             return True
         if hasattr(channel, "parent_id") and channel.parent_id in LLM_ALLOW_CHANNELS:
@@ -39,53 +41,42 @@ class LLM_Chat(commands.Cog):
         return False
 
     def is_triggered(self, message: discord.Message) -> bool:
-        """
-        判断是否触发回复逻辑：
-        1. 消息中提及了 Bot (At)
-        2. 消息回复了 Bot 的消息
-        """
-        # 情况1: 直接 At
+        if isinstance(message.channel, discord.DMChannel):
+            return True
         if self.bot.user in message.mentions:
             return True
-        
-        # 情况2: 回复链检测
         if message.reference and message.reference.cached_message:
-            # 如果能获取到缓存的消息对象，直接判断作者
             if message.reference.cached_message.author.id == self.bot.user.id:
                 return True
         elif message.reference:
-            # 如果没有缓存（比如消息太久远），尝试通过 resolve (API调用可能较慢，通常 message.reference.resolved 更好)
-            # 简单起见，这里主要依赖 message.mentions，回复通常伴随 mention
-            # 如果需要强回复检测（即使回复时关掉了 mention），需要 fetch_message，但会增加 API 消耗
             pass
-            
         return False
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # ---------- 基础过滤 ----------
         if message.author.bot:
             return
 
-        if not self.is_channel_allowed(message.channel):
-            return
-
-        if not self.is_triggered(message):
-            return
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        if is_dm:
+            if message.author.id not in ADMIN_IDS:
+                return
+        else:
+            if not self.is_channel_allowed(message.channel):
+                return
+            if not self.is_triggered(message):
+                return
 
         max_tool_rounds = 8
         current_round = 0
 
         try:
             async with message.channel.typing():
-
-                # ---------- 1. 拉取上下文 ----------
                 history_messages = [
-                    msg async for msg in message.channel.history(limit=30)
+                    msg async for msg in message.channel.history(limit=100)
                 ]
                 history_messages.reverse()
-
-                # ---------- 2. 构建 Prompt ----------
+                
                 if LLM_FORMAT == "gemini":
                     final_data = await parse_message_history_to_prompt(
                         message=history_messages,
@@ -93,36 +84,33 @@ class LLM_Chat(commands.Cog):
                         bot_user=self.bot.user,
                         admin_ids=ADMIN_IDS
                     )
-
+                    current_seed = final_data.pop("_system_seed")
+                    prompt_suffix = f"\n[System Seed : {current_seed}]。正常回复结束时必须使用 <||reply_end||> 结尾。"
                     payload_list = final_data.get("contents", [])
-
-                    # Gemini systemInstruction（伪装，后续在 llm_call 拆）
                     payload_list.insert(0, {
                         "systemInstruction": {
-                            "parts": [{"text": SYSTEM_PROMPT}]
+                            "parts": [{"text": SYSTEM_PROMPT + prompt_suffix}]
                         }
                     })
-                    # 插入最后一条的消息
                     payload_list.append({
                         "role": 'model',
                         "parts": [ { "text": CUSTOM_PROMPT_1 } ]
                     })
-
                 else:
                     final_data = await parse_message_history_to_prompt(
                         message=history_messages,
-                        post_processing_callback=gemini_format_callback,
+                        post_processing_callback=openai_format,
                         bot_user=self.bot.user,
                         admin_ids=ADMIN_IDS
                     )
-
+                    current_seed = final_data.pop("_system_seed")
+                    prompt_suffix = f"\n[System Seed : {current_seed}]。当需要调用工具时，输出工具标签；当不需要调用工具或工具使用完毕准备回答用户时，输出正文并在结尾加上 <||reply_end||>。"
                     payload_list = final_data.get("messages", [])
                     payload_list.insert(0, {
                         "role": "system",
-                        "content": SYSTEM_PROMPT
+                        "content": SYSTEM_PROMPT + prompt_suffix
                     })
 
-                # ---------- 3. Tool / LLM 循环 ----------
                 start_ts = time.time()
 
                 while current_round < max_tool_rounds:
@@ -135,157 +123,187 @@ class LLM_Chat(commands.Cog):
                         llm_input_json,
                         include_tools=True
                     )
-                    self.log.debug("===== RAW LLM RESULT =====")
-                    self.log.debug(llm_result)
-                    self.log.debug("===== END RAW LLM RESULT =====")
-
-                    # 即使 llm_result['type'] 是 text，只要 raw 里有 functionCall，就是工具调用
-                    raw_candidates = llm_result.get("raw", {}).get("candidates", [])
-                    found_function_call_part = None
-                    raw_parts_list = []
-
-                    if raw_candidates:
-                        raw_parts_list = raw_candidates[0].get("content", {}).get("parts", [])
-                        for part in raw_parts_list:
-                            if "functionCall" in part:
-                                found_function_call_part = part
-                                break
-
-                    if found_function_call_part:
-                        result_type = "tool_call"
+                    
+                    raw_data = llm_result.get("raw", {})
+                    self.log.debug(f"LLM Result Type: {llm_result.get('type')}")
+                    self.log.debug(f"Raw JSON Response: {json.dumps(raw_data, ensure_ascii=False)}")
+                    result_type = llm_result.get("type")
+                    text_content = llm_result.get("text", "")
+                    
+                   # =========================================================
+                    #  Custom Tool Call 解析
+                    found_custom_tool = False
+                    custom_tool_data = {}
+                    parse_error_msg = None
+                    
+                    if GEMINI_TOOL_CALL == "custom" and result_type == "text":
+                        # 匹配标签内容
+                        pattern = r'<custom_tool_call>(.*?)(?:</custom_tool_call>|$)'
+                        match = re.search(pattern, text_content, re.DOTALL)
                         
-                        func_name = found_function_call_part["functionCall"]["name"]
-                        func_args = found_function_call_part["functionCall"]["args"]
+                        if match:
+                            found_custom_tool = True
+                            tool_content_str = match.group(1).strip()
+                            self.log.info(f"Custom Tool String Detected: {tool_content_str}")
+                            
+                            try:
+                                # 1. 提取工具名称
+                                name_match = re.search(r'name\s*=\s*"([^"]+)"', tool_content_str)
+                                if not name_match:
+                                    raise ValueError("解析失败：未在标签内找到有效的 name=\"工具名\" 参数。")
+                                
+                                func_name = name_match.group(1)
+                                
+                                # 2. 提取参数对并尝试转化为 JSON 兼容格式
+                                params_part = re.sub(r'name\s*=\s*"[^"]+"', '', tool_content_str).strip()
+                                params_part = params_part.strip(',').strip()
+                                
+                                if not params_part:
+                                    args = {}
+                                else:
+                                    # 此时 params_part 可能是: "query"="xxx", "engines"=["google"]
+                                    # 我们利用正则将 = 替换为 :
+                                    # 匹配 "key" = 
+                                    json_ready = re.sub(r'(\"[^\"]+\")\s*=\s*', r'\1: ', params_part)
+                                    # 包装成 JSON 对象
+                                    try:
+                                        args = json.loads("{" + json_ready + "}")
+                                    except json.JSONDecodeError:
+                                        # 如果 JSON 解析失败，说明存在非标准格式（如未引号的字符串或格式混乱）
+                                        raise ValueError("参数语法错误：请确保参数符合 \"key\"=value 格式，且字符串和数组符合 JSON 标准。")
+
+                                custom_tool_data = {"name": func_name, "args": args}
+
+                            except Exception as e:
+                                found_custom_tool = True # 标记为工具调用，但我们需要处理错误
+                                parse_error_msg = str(e)
+                                self.log.error(f"Custom Tool Parse Error: {parse_error_msg}")
+
+                    # =========================================================
+
+                    # ---------- 分发逻辑 ----------
+                    
+                    if result_type == "tool_call":
+                        func_name = llm_result["name"]
+                        func_args = llm_result["args"]
+                        original_parts = llm_result.get("parts_trace")
                         
-                        original_parts = raw_parts_list 
+                        self.log.info(f"Native Tool Call → {func_name}")
+                        
+                        tool_result = await tool_manager.handle_tool_call(func_name, func_args)
+                        
+                        payload_list.append({"role": "model", "parts": original_parts})
+                        payload_list.append({
+                            "role": "user",
+                            "parts": [{
+                                "functionResponse": {
+                                    "name": func_name,
+                                    "response": {"content": tool_result}
+                                }
+                            }]
+                        })
+                        continue
+
+                    elif found_custom_tool:
+                        # 补全历史记录（model 角色）
+                        model_history_text = text_content if "</custom_tool_call>" in text_content else text_content + "</custom_tool_call>"
+                        payload_list.append({"role": "model", "parts": [{"text": model_history_text}]})
+
+                        if parse_error_msg:
+                            # 解析失败：反馈给模型
+                            error_feedback = f"""
+                                [System seed:{current_seed}]: ❌ 工具调用语法解析失败。
+                                原因: {parse_error_msg}
+                                提示: 请严格遵循 "key"=value 格式。字符串须加双引号，数组须使用标准 JSON 的方括号 [] 格式。
+                                格式范例 (含数组): <custom_tool_call>name="internet_search", "query"="关键词", "engines"=["google", "wikipedia"], "max_results"=10</custom_tool_call>
+                                注意: 
+                                1. 参数名（Key）必须加双引号。
+                                2. 数组内元素如果是字符串，也必须加双引号。
+                                3. 标签必须闭合或以停止符结束。
+                            """
+                            payload_list.append({"role": "user", "parts": [{"text": error_feedback}]})
+                            payload_list.append({"role": "model", "parts": [{"text": CUSTOM_PROMPT_1}]})
+                            self.log.warning("Sent parse error feedback to model.")
+                        else:
+                            # 解析成功：执行工具
+                            func_name = custom_tool_data["name"]
+                            func_args = custom_tool_data["args"]
+                            self.log.info(f"Executing Custom Tool: {func_name}")
+                            
+                            tool_result = await tool_manager.handle_tool_call(func_name, func_args)
+                            tool_json_str = json.dumps(tool_result, ensure_ascii=False)
+                            
+                            tool_return_prompt = f"""
+                                [System seed:{current_seed}]:【【【
+                                notify : \"工具 {func_name} 执行完毕。\n结果数据: {tool_json_str}\"
+                                Notice: \"请根据以上系统提供的客观事实数据继续执行当前任务或继续下一个工具调用。\"
+                                】】】
+                            """
+                            payload_list.append({"role": "user", "parts": [{"text": tool_return_prompt}]})
+                            payload_list.append({"role": "model", "parts": [{"text": CUSTOM_PROMPT_1}]})
+                        
+                        continue
+
+                    # C. 普通文本回复
                     else:
-                        result_type = llm_result.get("type")
-                        original_parts = None
-
-
-                    # ---------- 4. 普通文本回复 (只有明确不是工具调用时才进这里) ----------
-                    if result_type == "text":
                         response_chunks = llm_result["chunks"]
                         usage = parse_gemini_usage(llm_result.get("raw", {}))
-
                         elapsed = time.time() - start_ts
                         latency_s = round(elapsed, 3)
-
-                        reply_content = response_chunks[0]
-
-                        if "System Seed:" in reply_content:
-                            reply_content = reply_content.split("System Seed:")[0]
-
-                        # 处理思维链标签
-                        if "</think>" in reply_content:
-                            # 贪婪匹配：取最后一个 </think> 之后的内容
-                            reply_content = reply_content.rsplit("</think>", 1)[1].strip()
                         
-                        # 如果内容为空（比如只有思考没有正文），这里可以做一个兜底或者打断
-                        # 但通常 text 类型到这里就该结束了
-                        if not reply_content:
-                            reply_content = "*(模型仅输出了思考过程，未生成回复内容)*"
+                        raw_reply = response_chunks[0]
 
-                        reply_content += (
+                        # 2. 去除 Custom Tool Call 标签（防止泄露标签显示给用户）
+                        if GEMINI_TOOL_CALL == "custom":
+                             raw_reply = re.sub(r'<custom_tool_call>.*?(?:</custom_tool_call>|$)', '', raw_reply, flags=re.DOTALL)
+
+                        if "<||reply_end||>" in raw_reply:
+                            raw_reply = raw_reply.split("<||reply_end||>")[0]
+                        else:
+                            pass 
+
+                        # 3. 处理思维链
+                        if "</think>" in raw_reply:
+                            # 只保留 think 之后的内容
+                            display_content = raw_reply.rsplit("</think>", 1)[1].strip()
+                        else:
+                            if current_round < max_tool_rounds:
+
+                                # 将当前的半成品加入历史
+                                payload_list.append({
+                                    "role": "model",
+                                    "parts": [{"text": text_content+"\n没有成功输出</think>标签...重新生成回复:<think>"}]
+                                })
+                                continue # 关键：回到 while 循环开始下一轮请求
+                            else:
+                                # 达到最大轮次仍未闭合思维链
+                                display_content = "*(思维卡住了...)*"
+
+                        if not display_content:
+                            display_content = "*(Thinking... or Empty Response)*"
+
+                        # 添加 Footer
+                        display_content += (
                             f"\n\n-# Time:{latency_s}s | "
                             f"In:{usage['input_tokens']}t | "
                             f"Out:{usage['output_tokens']}t"
                         )
 
-                        await message.reply(reply_content, mention_author=False)
+                        await message.reply(display_content, mention_author=False)
                         return
-
-                    # ---------- 5. Tool 调用 ----------
-                    if result_type == "tool_call":
-                        # 注意：func_name 和 func_args 已经在上面的检测逻辑中赋值了
-                        # 如果没有在上面赋值（即走了原本的 tool_call 分支），尝试从 llm_result 获取
-                        if 'func_name' not in locals():
-                            func_name = llm_result["name"]
-                            func_args = llm_result["args"]
-                            original_parts = llm_result.get("parts_trace")
-
-                        self.log.info(f"Tool Call → {func_name}({func_args})")
-
-                        tool_result = await tool_manager.handle_tool_call(
-                            func_name,
-                            func_args
-                        )
-
-                        # 将原始的（包含思考过程的）Model 响应加入历史
-                        if original_parts:
-                            payload_list.append({
-                                "role": "model",
-                                "parts": original_parts 
-                            })
-                        else:
-                            # 兜底：如果没抓到 parts，手动构建
-                            payload_list.append({
-                                "role": "model",
-                                "parts": [{
-                                    "functionCall": {
-                                        "name": func_name,
-                                        "args": func_args
-                                    }
-                                }]
-                            })
-
-                        # 处理工具返回结果
-                        if tool_result.get("results"):
-                            payload_list.append({
-                                "role": "function",
-                                "parts": [{
-                                    "functionResponse": {
-                                        "name": func_name,
-                                        "response": {
-                                            "content": tool_result
-                                        }
-                                    }
-                                }]
-                            })
-                        else:
-                            payload_list.append({
-                                "role": "function",
-                                "parts": [{
-                                    "functionResponse": {
-                                        "name": func_name,
-                                        "response": {
-                                            "content": {
-                                                "query": func_args.get("query"),
-                                                "results": [],
-                                                "notice": "⚠️ 没有找到匹配结果"
-                                            }
-                                        }
-                                    }
-                                }]
-                            })
-
-                        continue
-
-                # ---------- 6. 兜底 ----------
-                await message.reply(
-                    "*(思考好像绕进死胡同了…要不换个问法？)*",
-                    mention_author=False
-                )
 
         except Exception as e:
             self.log.error(f"Chat processing error: {e}", exc_info=True)
-            await message.add_reaction("😵")
-
+            try:
+                await message.add_reaction("😵")
+            except:
+                pass
 
 def parse_gemini_usage(resp: dict) -> dict:
     usage = resp.get("usageMetadata", {})
-
     return {
         "input_tokens": usage.get("promptTokenCount", 0),
         "output_tokens": usage.get("candidatesTokenCount", 0),
         "thought_tokens": usage.get("thoughtsTokenCount", 0),
         "total_tokens": usage.get("totalTokenCount", 0),
     }
-
-async def get_or_create_webhook(channel: discord.TextChannel) -> discord.Webhook:
-    webhooks = await channel.webhooks()
-    for wh in webhooks:
-        if wh.name == "LLM-Chat":
-            return wh
-
-    return await channel.create_webhook(name="LLM-Chat")

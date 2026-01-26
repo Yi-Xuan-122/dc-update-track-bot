@@ -18,4 +18,16 @@ ENABLE_CUSTOM_TOOLS=1
 # ---CUSTOM_TOOLS CONFIG START---
 # SearXNG ---for example
 SEARXNG_URL="http://host.docker.internal:<your_searxng_port>"
+# if GEMINI_TOOL_CALL = "custom"
+CUSTOM_TOOL_PROMPT="""
+<custom_tool使用方法>
+</think>标签后立刻输入对应的函数名称以及调用的参数，一次只允许输出一次函数调用，函数调用后不允许出现任何正文。
+严格遵循以下格式（不要输出 Markdown 代码块）,正确的格式：
+`之前的思维链内容...</think><custom_tool_call>name="func_name", "arg_name"="value", "arg_int"=123</custom_tool_call><||tool_end||>`
+注意：
+1. 必须以 <custom_tool_call> 开头以及 </custom_tool_call> 结尾，随后显式输出<||tool_end||>表示工具调用完成。
+2. 参数之间用逗号分隔。
+3. 字符串参数必须用双引号包裹。
+</custom_tool使用方法>
+"""
 # ---CUSTOM_TOOLS CONFIG END---

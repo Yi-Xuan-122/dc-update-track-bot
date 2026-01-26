@@ -57,6 +57,8 @@ if int(os.getenv('GEMINI_SEARCH', 0)) == 1:
     GEMINI_SEARCH = True
 else:
     GEMINI_SEARCH = False
+GEMINI_TOOL_CALL = os.getenv("GEMINI_TOOL_CALL","gemini")
+
 
 # --- summary config ---
 utc_zone_str = os.getenv('UTC_ZONE')

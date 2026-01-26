@@ -118,4 +118,7 @@ async def parse_message_history_to_prompt(message:List[discord.Message],post_pro
     end_str = "\n".join(member_list_parts)
     main_prompt = await post_processing_callback(end_str, None, main_prompt)
     
+    if isinstance(main_prompt, dict):
+        main_prompt["_system_seed"] = Seed
+        
     return main_prompt

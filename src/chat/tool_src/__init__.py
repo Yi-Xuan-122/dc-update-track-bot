@@ -4,7 +4,9 @@ from src.chat.tool_src.tool_base import BaseTool
 # 导入具体工具
 from src.chat.tool_src.custom_tool.searxng import SearxngTool
 from src.chat.tool_src.custom_tool.WebPageContextTool import WebPageContextTool
-from src.chat.chat_env import ENABLE_CUSTOM_TOOLS
+from src.chat.chat_env import ENABLE_CUSTOM_TOOLS 
+from src.chat.chat_env import CUSTOM_TOOL_PROMPT
+import json
 
 class ToolManager:
     def __init__(self):
@@ -32,6 +34,18 @@ class ToolManager:
             return await self.tools[tool_name].execute(**args)
         except Exception as e:
             return f"Error executing {tool_name}: {str(e)}"
+        
+    def get_custom_tools_prompt(self) -> str:
+        """获取 Custom 模式下的 System Prompt 补充"""
+        if not self.tools:
+            return ""
+        
+        # 获取纯净的 schema 定义
+        declarations = [t.to_gemini_schema() for t in self.tools.values()]
+        json_schema = json.dumps({"function_declarations": declarations}, ensure_ascii=False, indent=2)
+        prompt = f"<custom_tool_list>\n{json_schema}\n</custom_tool_list>"
+        custom_tool_prompt = prompt + CUSTOM_TOOL_PROMPT
+        return custom_tool_prompt
 
 # 单例模式
 tool_manager = ToolManager()

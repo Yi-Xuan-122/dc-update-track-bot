@@ -23,8 +23,6 @@ class SearxngTool(BaseTool):
     def description(self):
         return (
             "在互联网上搜索信息。返回结果仅包含简短摘要和URL。"
-            "如果摘要中的信息不完整（例如正文被截断），请务必提取结果中的 URL，"
-            "并调用 webpage_context 工具读取网页完整内容以获取详情。"
         )
 
     @property
@@ -45,7 +43,7 @@ class SearxngTool(BaseTool):
             },
             "max_results": {
                 "type": "INTEGER",
-                "description": "最多返回的总结果数（1-10，默认 5）"
+                "description": "最多返回的总结果数（5-20，默认 10）"
             }
         }
 
@@ -54,12 +52,12 @@ class SearxngTool(BaseTool):
         query: str,
         engines: list[str] | None = None,
         time_range: str = "",
-        max_results: int = 5
+        max_results: int = 10
     ) -> dict:
         log.info(f"SearXNG search: {query}")
 
         # ---------- 参数兜底 ----------
-        max_results = max(1, min(max_results, 10))
+        max_results = max(5, min(max_results, 20))
 
         if not engines:
             engines = ["duckduckgo", "wikipedia"]
