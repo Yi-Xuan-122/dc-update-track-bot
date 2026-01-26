@@ -289,7 +289,7 @@ class LLM_Chat(commands.Cog):
                             f"Out:{usage['output_tokens']}t"
                         )
 
-                        await message.reply(display_content, mention_author=False)
+                        await message.reply(display_content, mention_author=False,suppress_embeds=True)
                         return
 
         except Exception as e:
