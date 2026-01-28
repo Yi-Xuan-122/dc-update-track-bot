@@ -155,7 +155,7 @@ class ChatHistoryTemplate:
                     ref_preview = target_meta['preview']
                     ref_tag = target_meta['tag']
                     # 格式：[Replying to #15 <Tag>: "preview..."]
-                    reply_str = f"[Replying to Floor:#{ref_floor} <{ref_tag}>: \"{ref_preview}\"]\n"
+                    reply_str = f"[Replying to Floor:[#{ref_floor}] <{ref_tag}>: \"{ref_preview}\"]\n"
                 else:
                     # 找不到 (可能是太久以前未加载，或被删除)
                     reply_str = f"[Replying to Unknown Floor (MsgID:{ref_id})]\n"

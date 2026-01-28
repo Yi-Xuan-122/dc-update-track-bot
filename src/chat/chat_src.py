@@ -9,9 +9,10 @@ from src.chat.gemini_format import gemini_format_callback
 from src.config import LLM_FORMAT , LLM_ALLOW_CHANNELS ,ADMIN_IDS
 from src.chat.chat_aux import ChatHistoryTemplate
 from src.summary.summary_aux import openai_format
-from src.llm import LLM
+from src.llm import LLM, smart_split_message
 from src.summary.summary_aux import RateLimitingScheduler
 import time
+import asyncio
 from src.chat.tool_src import tool_manager
 
 class LLM_Chat(commands.Cog):
@@ -48,7 +49,7 @@ class LLM_Chat(commands.Cog):
         if message.reference and message.reference.cached_message:
             if message.reference.cached_message.author.id == self.bot.user.id:
                 return True
-        elif message.reference:
+        elif message.reference and message.mentions:
             pass
         return False
 
@@ -122,7 +123,8 @@ class LLM_Chat(commands.Cog):
                     current_round += 1
 
                     llm_input_json = json.dumps(payload_list, ensure_ascii=False)
-                    self.log.debug(f"LLM Payload:\n{llm_input_json}")
+                    llm_input_json_debug = truncate_base64_data(llm_input_json)
+                    self.log.debug(f"LLM Payload:\n{llm_input_json_debug}")
 
                     llm_result = await self.llm.llm_call(
                         llm_input_json,
@@ -251,56 +253,73 @@ class LLM_Chat(commands.Cog):
 
                     # C. 普通文本回复
                     else:
-                        response_chunks = llm_result["chunks"]
                         usage = parse_gemini_usage(llm_result.get("raw", {}))
                         elapsed = time.time() - start_ts
                         latency_s = round(elapsed, 3)
                         
-                        raw_reply = response_chunks[0]
+                        # 获取原始全文进行清洗
+                        raw_reply = llm_result.get("text", "")
 
-                        # 2. 去除 Custom Tool Call 标签（防止泄露标签显示给用户）
+                        # 1. 去除 Custom Tool Call 标签
                         if GEMINI_TOOL_CALL == "custom":
                              raw_reply = re.sub(r'<custom_tool_call>.*?(?:</custom_tool_call>|$)', '', raw_reply, flags=re.DOTALL)
 
+                        # 2. 去除停止符
                         if "<||reply_end||>" in raw_reply:
                             raw_reply = raw_reply.split("<||reply_end||>")[0]
-                        else:
-                            pass 
 
-                        # 3. 处理思维链
+                        # 3. 处理思维链，只保留思考后的内容
+                        display_content = ""
                         if "</think>" in raw_reply:
-                            # 只保留 think 之后的内容
-                            display_content = raw_reply.rsplit("</think>", 1)[1].strip()
+                            parts = raw_reply.rsplit("</think>", 1)
+                            if len(parts) > 1:
+                                display_content = parts[1].strip()
                         else:
+                            # 如果没有结束标签
                             if current_round < max_tool_rounds:
-
-                                # 将当前的半成品加入历史
+                                # 如果还没到最后且没输出完思考，强制重试
                                 payload_list.append({
                                     "role": "model",
                                     "parts": [{"text": text_content+"\n没有成功输出</think>标签...重新生成回复:<think>"}]
                                 })
-                                continue # 关键：回到 while 循环开始下一轮请求
+                                continue 
                             else:
-                                # 达到最大轮次仍未闭合思维链
                                 display_content = "*(思维卡住了...)*"
 
                         if not display_content:
-                            display_content = "*(Thinking... or Empty Response)*"
+                            if "</think>" not in text_content and raw_reply.strip():
+                                display_content = raw_reply.strip()
+                            else:
+                                display_content = "*(Thinking... or Empty Response)*"
 
-                        # 添加 Footer
-                        display_content += (
-                            f"\n\n-# Time:{latency_s}s | "
-                            f"In:{usage['input_tokens']}t | "
-                            f"Out:{usage['output_tokens']}t"
-                        )
+                        # 4. 调用新的智能分块
+                        final_chunks = smart_split_message(display_content)
+                        total_chunks = len(final_chunks)
 
-                        await message.reply(display_content, mention_author=False,suppress_embeds=True)
+                        for i, chunk in enumerate(final_chunks):
+                            # 构建页脚：Chunk: 0, 1, ...
+                            footer_info = [
+                                f"Chunk:{i}/{total_chunks - 1}" if total_chunks > 1 else None,
+                                f"Time:{latency_s}s",
+                                f"In:{usage['input_tokens']}t",
+                                f"Out:{usage['output_tokens']}t"
+                            ]
+                            # 过滤 None，拼接 footer
+                            footer_str = " | ".join(filter(None, footer_info))
+                            msg_to_send = f"{chunk}\n\n-# {footer_str}"
+                            
+                            if i == 0:
+                                await message.reply(msg_to_send, mention_author=False, suppress_embeds=True)
+                            else:
+                                await asyncio.sleep(1) # 间隔1秒
+                                await message.channel.send(msg_to_send, suppress_embeds=True)
+
                         return
 
         except Exception as e:
             self.log.error(f"Chat processing error: {e}", exc_info=True)
             try:
-                await message.add_reaction("😵")
+                await message.add_reaction("❌")
             except:
                 pass
 
@@ -312,3 +331,13 @@ def parse_gemini_usage(resp: dict) -> dict:
         "thought_tokens": usage.get("thoughtsTokenCount", 0),
         "total_tokens": usage.get("totalTokenCount", 0),
     }
+
+def truncate_base64_data(text: str) -> str:
+    BASE64_TRUNCATE_RE = re.compile(
+        r'("data"\s*:\s*")([A-Za-z0-9+/=]{20})[A-Za-z0-9+/=]+(")'
+)
+
+    return BASE64_TRUNCATE_RE.sub(
+        r'\1\2...(truncated)\3',
+        text
+    )

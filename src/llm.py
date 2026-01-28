@@ -34,6 +34,147 @@ def parse_yaml(text:str)->dict:
                 result[key] = value  
     return result
 
+def smart_split_message(text: str, max_length: int = 1900) -> list[str]:
+    """
+    智能分块逻辑 V3 (修复长单行溢出问题):
+    1. 结构化解析：区分代码块和普通文本。
+    2. 代码块处理：保留完整性，仅在过大时递归拆分。
+    3. 文本处理：贪婪填充，遇到超长单行立即强制切片，防止缓冲区溢出。
+    """
+    if not text:
+        return []
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    
+    parts = re.split(r'(```[\s\S]*?```)', text)
+
+    for part in parts:
+        if not part:
+            continue
+            
+        is_code_block = part.startswith("```") and part.endswith("```")
+        part_len = len(part)
+
+        if is_code_block:
+            # Case 1: 代码块本身超长 -> 结算当前 + 递归拆分代码块
+            if part_len > max_length:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+                chunks.extend(_split_large_code_block(part, max_length))
+            
+            # Case 2: 代码块能放入 -> 检查是否需要换行
+            else:
+                if len(current_chunk) + part_len > max_length:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = part
+                else:
+                    current_chunk += part
+        else:
+            # Case 3: 普通文本
+            if len(current_chunk) + part_len <= max_length:
+                current_chunk += part
+            else:
+                # 文本过长，逐行处理
+                lines = part.split('\n')
+                for i, line in enumerate(lines):
+                    # 补回换行符（最后一行如果原文本没换行，这里也不加，但 split 行为通常会吞掉分隔符）
+                    # 简单起见，除了最后一行，都加换行。如果原串末尾有\n，split会产生空串在最后。
+                    line_text = line + ("\n" if i < len(lines) - 1 else "")
+                    
+                    if len(current_chunk) + len(line_text) > max_length:
+                        # 当前缓冲已满，先推送
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                            current_chunk = ""
+                        
+                        # 检查新的一行是否本身就超长
+                        if len(line_text) > max_length:
+                            # 强制切片长单行
+                            while len(line_text) > max_length:
+                                chunks.append(line_text[:max_length])
+                                line_text = line_text[max_length:]
+                            current_chunk = line_text
+                        else:
+                            current_chunk = line_text
+                    else:
+                        current_chunk += line_text
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+def _split_large_code_block(code_block: str, max_length: int) -> list[str]:
+    """辅助函数：切割超大代码块，处理内部超长行"""
+    first_line_end = code_block.find('\n')
+    if first_line_end == -1:
+        # 极端的单行代码块...直接强切
+        return [code_block[i:i+max_length] for i in range(0, len(code_block), max_length)]
+    
+    header = code_block[:first_line_end].strip() # ```python
+    language = header.lstrip('`').strip()
+    content = code_block[first_line_end+1:-3] 
+    
+    sub_chunks = []
+    current_sub = header + "\n"
+    
+    # 预留闭合标记的长度
+    footer_len = 5 # \n```
+    
+    lines = content.split('\n')
+    for line in lines:
+        line_with_nl = line + "\n"
+        
+        # 检查是否溢出
+        if len(current_sub) + len(line_with_nl) + footer_len > max_length:
+            # 闭合当前块
+            if not current_sub.endswith("\n"):
+                current_sub += "\n"
+            current_sub += "```"
+            sub_chunks.append(current_sub)
+            
+            # 开启新块
+            current_sub = f"```{language}\n"
+            
+            # 处理新行本身就超长的情况
+            if len(current_sub) + len(line_with_nl) + footer_len > max_length:
+                # 必须强制切断这一行，否则会死循环或溢出
+                available_space = max_length - len(current_sub) - footer_len
+                remaining_line = line_with_nl
+                
+                while len(remaining_line) > available_space:
+                    part = remaining_line[:available_space]
+                    remaining_line = remaining_line[available_space:]
+                    
+                    current_sub += part + "```" # 闭合
+                    sub_chunks.append(current_sub)
+                    
+                    current_sub = f"```{language}\n" # 重开
+                    available_space = max_length - len(current_sub) - footer_len
+                
+                current_sub += remaining_line
+            else:
+                current_sub += line_with_nl
+        else:
+            current_sub += line_with_nl
+            
+    # 收尾
+    if current_sub.strip() != f"```{language}":
+        stripped = current_sub.strip()
+        if not stripped.endswith("```"):
+             if not current_sub.endswith("\n") and not current_sub.endswith("```"):
+                 current_sub += "\n"
+             if not current_sub.endswith("```"):
+                 current_sub += "```"
+        sub_chunks.append(current_sub)
+        
+    return sub_chunks
+
 class LLM():
     def __init__(self):
         try:
@@ -139,10 +280,7 @@ class LLM():
 
         # Debug Log
         try:
-            debug_body = copy.deepcopy(body)
-            truncate_sensitive_data(debug_body)
             log.info(f"Sending request to {self.base_url}")
-            log.debug(f"Request Body (Truncated):\n{json.dumps(debug_body, ensure_ascii=False, indent=2)}")
         except Exception as e:
             log.error(f"Failed to generate debug log: {e}")
 
@@ -203,8 +341,9 @@ class LLM():
                 log.error(f"Exception: {e}", exc_info=True)
                 raise ValueError(f"Invalid response format: {e}")
 
-            chunk_size = 1800
-            chunks = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]
+            # 使用修复后的智能分块
+            chunks = smart_split_message(content)
+            
             return {
                 "type": "text",
                 "chunks": chunks,
@@ -212,20 +351,3 @@ class LLM():
                 "text": content,
                 "finish_reason": finish_reason
             }
-
-def truncate_sensitive_data(obj):
-    """递归遍历字典或列表，截断 Base64 数据"""
-    if isinstance(obj, list):
-        for item in obj:
-            truncate_sensitive_data(item)
-    elif isinstance(obj, dict):
-        if "inline_data" in obj and isinstance(obj["inline_data"], dict):
-            data = obj["inline_data"].get("data")
-            if isinstance(data, str) and len(data) > 20:
-                obj["inline_data"]["data"] = data[:20] + "..."
-        if "image_url" in obj and isinstance(obj["image_url"], dict):
-            url = obj["image_url"].get("url")
-            if isinstance(url, str) and url.startswith("data:") and len(url) > 40:
-                obj["image_url"]["url"] = url[:40] + "..."
-        for value in obj.values():
-            truncate_sensitive_data(value)

@@ -17,6 +17,7 @@ class WebPageContextTool(BaseTool):
             """
             当出现https、http链接需要查看时，提供url，返回网页内的内容。
             回复时记得引用对应的URL。
+            **特别的，当你需要浏览github上某个文件，请转换为:`https://raw.githubusercontent.com/.../file.example`格式**
             <Tool_Think>
             1.禁止使用捏造或自己构造的URL，必须是上下文中包含的或网络查找后的合理URL
             2.调用后必须优先解析http状态码，若非200则根据任务要求判断是否中止当前任务并承认任务失败。例如:
