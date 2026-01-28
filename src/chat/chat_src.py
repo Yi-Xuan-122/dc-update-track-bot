@@ -68,7 +68,7 @@ class LLM_Chat(commands.Cog):
             if not self.is_triggered(message):
                 return
 
-        max_tool_rounds = 8
+        max_tool_rounds = 16
         current_round = 0
 
         try:
@@ -243,9 +243,19 @@ class LLM_Chat(commands.Cog):
                             tool_return_prompt = f"""
                                 [System seed:{current_seed}]:【【【
                                 notify : \"工具 {func_name} 执行完毕。\n结果数据: {tool_json_str}\"
-                                Notice: \"请根据以上系统提供的客观事实数据继续执行当前任务或继续下一个工具调用。\"
-                                】】】
+                                当前调用轮数:{current_round}/{max_tool_rounds}
                             """
+                            if current_round == max_tool_rounds:
+                                tool_return_notice = f"""
+                                    Notice: \"这是最后一轮调用机会，请立即整合现有信息给出最终结论，严禁再次调用工具，若信息不足请承认失败。\"
+                                    】】】
+                                """
+                            else:
+                                tool_return_notice = f"""
+                                    Notice: \"请根据以上系统提供的客观事实数据继续执行当前任务或继续下一个工具调用。\"
+                                    】】】
+                                """
+                            tool_return_prompt = tool_return_prompt + tool_return_notice
                             payload_list.append({"role": "user", "parts": [{"text": tool_return_prompt}]})
                             payload_list.append({"role": "model", "parts": [{"text": CUSTOM_PROMPT_1}]})
                         
