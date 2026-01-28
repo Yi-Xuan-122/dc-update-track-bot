@@ -21,6 +21,7 @@ class LLM_Chat(commands.Cog):
         self.llm = LLM()
         self.scheduler = RateLimitingScheduler(bot)
         self.log = logging.getLogger("LLM_Chat")
+        tool_manager.set_bot_instance(bot)
     
     def cog_load(self):
             logging.debug("LLM Chat is starting.")
@@ -56,6 +57,9 @@ class LLM_Chat(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
+            return
+        
+        if tool_manager.is_user_blacklisted(message.author.id):
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -189,7 +193,9 @@ class LLM_Chat(commands.Cog):
                     # =========================================================
 
                     # ---------- 分发逻辑 ----------
-                    
+                    context_kwargs = {}
+                    if message.guild:
+                        context_kwargs['_context_guild_id'] = message.guild.id
                     if result_type == "tool_call":
                         func_name = llm_result["name"]
                         func_args = llm_result["args"]
@@ -197,7 +203,7 @@ class LLM_Chat(commands.Cog):
                         
                         self.log.info(f"Native Tool Call → {func_name}")
                         
-                        tool_result = await tool_manager.handle_tool_call(func_name, func_args)
+                        tool_result = await tool_manager.handle_tool_call(func_name, func_args,**context_kwargs)
                         
                         payload_list.append({"role": "model", "parts": original_parts})
                         payload_list.append({
@@ -237,7 +243,7 @@ class LLM_Chat(commands.Cog):
                             func_args = custom_tool_data["args"]
                             self.log.info(f"Executing Custom Tool: {func_name}")
                             
-                            tool_result = await tool_manager.handle_tool_call(func_name, func_args)
+                            tool_result = await tool_manager.handle_tool_call(func_name, func_args,**context_kwargs)
                             tool_json_str = json.dumps(tool_result, ensure_ascii=False)
                             
                             tool_return_prompt = f"""
