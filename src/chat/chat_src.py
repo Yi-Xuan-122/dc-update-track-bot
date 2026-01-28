@@ -7,7 +7,7 @@ from src.chat.chat_env import system_prompt , SYSTEM_PROMPT,CUSTOM_PROMPT_1
 from src.config import ADMIN_IDS, GEMINI_TOOL_CALL
 from src.chat.gemini_format import gemini_format_callback
 from src.config import LLM_FORMAT , LLM_ALLOW_CHANNELS ,ADMIN_IDS
-from src.chat.chat_aux import parse_message_history_to_prompt
+from src.chat.chat_aux import ChatHistoryTemplate
 from src.summary.summary_aux import openai_format
 from src.llm import LLM
 from src.summary.summary_aux import RateLimitingScheduler
@@ -75,16 +75,19 @@ class LLM_Chat(commands.Cog):
                 history_messages = [
                     msg async for msg in message.channel.history(limit=100)
                 ]
-                history_messages.reverse()
+                
+                processor = ChatHistoryTemplate(bot_user=self.bot.user,admin_ids=ADMIN_IDS)
                 
                 if LLM_FORMAT == "gemini":
-                    final_data = await parse_message_history_to_prompt(
-                        message=history_messages,
+                    final_data_step_1 = await processor.parse_messages(
                         post_processing_callback=gemini_format_callback,
-                        bot_user=self.bot.user,
-                        admin_ids=ADMIN_IDS
+                        messages=history_messages
                     )
-                    current_seed = final_data.pop("_system_seed")
+                    final_data = await processor.finalize_prompt(
+                        main_prompt=final_data_step_1,
+                        post_processing_callback=gemini_format_callback
+                    )
+                    current_seed = final_data.get("_system_seed")
                     prompt_suffix = f"\n[System Seed : {current_seed}]。正常回复结束时必须使用 <||reply_end||> 结尾。"
                     payload_list = final_data.get("contents", [])
                     payload_list.insert(0, {
@@ -97,13 +100,15 @@ class LLM_Chat(commands.Cog):
                         "parts": [ { "text": CUSTOM_PROMPT_1 } ]
                     })
                 else:
-                    final_data = await parse_message_history_to_prompt(
-                        message=history_messages,
-                        post_processing_callback=openai_format,
-                        bot_user=self.bot.user,
-                        admin_ids=ADMIN_IDS
+                    final_data_step1 = processor.parse_messages(
+                        messages=history_messages,
+                        post_processing_callback=openai_format
                     )
-                    current_seed = final_data.pop("_system_seed")
+                    final_data = await processor.finalize_prompt(
+                        main_prompt=final_data_step_1,
+                        post_processing_callback=openai_format
+                    )
+                    current_seed = final_data.get("_system_seed")
                     prompt_suffix = f"\n[System Seed : {current_seed}]。当需要调用工具时，输出工具标签；当不需要调用工具或工具使用完毕准备回答用户时，输出正文并在结尾加上 <||reply_end||>。"
                     payload_list = final_data.get("messages", [])
                     payload_list.insert(0, {

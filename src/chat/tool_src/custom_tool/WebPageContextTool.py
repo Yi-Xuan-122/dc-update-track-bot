@@ -14,7 +14,17 @@ class WebPageContextTool(BaseTool):
     @property
     def description(self):
         return (
-            "当出现https、http链接需要查看时，提供url，返回网页内的内容。"
+            """
+            当出现https、http链接需要查看时，提供url，返回网页内的内容。
+            回复时记得引用对应的URL。
+            <Tool_Think>
+            1.禁止使用捏造或自己构造的URL，必须是上下文中包含的或网络查找后的合理URL
+            2.调用后必须优先解析http状态码，若非200则根据任务要求判断是否中止当前任务并承认任务失败。例如:
+             - 429:尝试抓取其他镜像站(若有)
+             - 403/404/500/503/其他错误码:承认任务失败，并显式的报告具体错误。
+            3.若抓取成功的网页内容包含‘Enable JavaScript’、‘CAPTCHA’或仅有大量CSS/JS代码而无实质文本，需判定为抓取失败，并尝试寻找镜像站或缓存。
+            </Tool_Think>
+            """
         )
 
     @property
