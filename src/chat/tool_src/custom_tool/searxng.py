@@ -65,7 +65,8 @@ class SearxngTool(BaseTool):
         query: str,
         engines: list[str] | None = None,
         time_range: str = "",
-        max_results: int = 10
+        max_results: int = 10,
+        **kwargs
     ) -> dict:
         log.info(f"SearXNG search: {query}")
 

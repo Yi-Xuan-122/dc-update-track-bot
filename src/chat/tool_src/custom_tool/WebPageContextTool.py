@@ -41,7 +41,7 @@ class WebPageContextTool(BaseTool):
             }
         }
 
-    async def execute(self, url: str, max_length: int = 5000) -> dict:
+    async def execute(self, url: str, max_length: int = 5000,**kwargs) -> dict:
         log.info(f">>> [WebPageContextTool] Start fetching: {url}")
         max_length = max(1, min(max_length, 20000))
 
