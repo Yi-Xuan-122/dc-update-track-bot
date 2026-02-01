@@ -3,7 +3,7 @@ from discord.ext import commands
 import logging
 import json
 import re
-from src.chat.chat_env import system_prompt , SYSTEM_PROMPT,CUSTOM_PROMPT_1
+from src.chat.chat_env import system_prompt , SYSTEM_PROMPT,CUSTOM_PROMPT_1,CUSTOM_PROMPT_2
 from src.config import ADMIN_IDS, GEMINI_TOOL_CALL
 from src.chat.gemini_format import gemini_format_callback
 from src.config import LLM_FORMAT , LLM_ALLOW_CHANNELS ,ADMIN_IDS
@@ -14,6 +14,7 @@ from src.summary.summary_aux import RateLimitingScheduler
 import time
 import asyncio
 from src.chat.tool_src import tool_manager
+from src.chat.tool_src.tool_base import ToolLexer , ToolParser
 
 class LLM_Chat(commands.Cog):
     def __init__(self, bot):
@@ -158,37 +159,19 @@ class LLM_Chat(commands.Cog):
                             self.log.info(f"Custom Tool String Detected: {tool_content_str}")
                             
                             try:
-                                # 1. 提取工具名称
-                                name_match = re.search(r'name\s*=\s*"([^"]+)"', tool_content_str)
-                                if not name_match:
-                                    raise ValueError("解析失败：未在标签内找到有效的 name=\"工具名\" 参数。")
-                                
-                                func_name = name_match.group(1)
-                                
-                                # 2. 提取参数对并尝试转化为 JSON 兼容格式
-                                params_part = re.sub(r'name\s*=\s*"[^"]+"', '', tool_content_str).strip()
-                                params_part = params_part.strip(',').strip()
-                                
-                                if not params_part:
-                                    args = {}
-                                else:
-                                    # 此时 params_part 可能是: "query"="xxx", "engines"=["google"]
-                                    # 我们利用正则将 = 替换为 :
-                                    # 匹配 "key" = 
-                                    json_ready = re.sub(r'(\"[^\"]+\")\s*=\s*', r'\1: ', params_part)
-                                    # 包装成 JSON 对象
-                                    try:
-                                        args = json.loads("{" + json_ready + "}")
-                                    except json.JSONDecodeError:
-                                        # 如果 JSON 解析失败，说明存在非标准格式（如未引号的字符串或格式混乱）
-                                        raise ValueError("参数语法错误：请确保参数符合 \"key\"=value 格式，且字符串和数组符合 JSON 标准。")
+                                lexer = ToolLexer(tool_content_str)
+                                tokens = lexer.tokenize()
 
+                                parser = ToolParser(tokens,tool_content_str)
+                                parsed_result = parser.parse()
+
+                                func_name = parsed_result["name"]
+                                args = parsed_result["args"]
+                                
                                 custom_tool_data = {"name": func_name, "args": args}
-
                             except Exception as e:
                                 found_custom_tool = True # 标记为工具调用，但我们需要处理错误
                                 parse_error_msg = str(e)
-                                self.log.error(f"Custom Tool Parse Error: {parse_error_msg}")
 
                     # =========================================================
 
@@ -228,14 +211,10 @@ class LLM_Chat(commands.Cog):
                                 [System seed:{current_seed}]: ❌ 工具调用语法解析失败。
                                 原因: {parse_error_msg}
                                 提示: 请严格遵循 "key"=value 格式。字符串须加双引号，数组须使用标准 JSON 的方括号 [] 格式。
-                                格式范例 (含数组): <custom_tool_call>name="internet_search", "query"="关键词", "engines"=["google", "wikipedia"], "max_results"=10</custom_tool_call>
-                                注意: 
-                                1. 参数名（Key）必须加双引号。
-                                2. 数组内元素如果是字符串，也必须加双引号。
-                                3. 标签必须闭合或以停止符结束。
+                                格式范例 (含数组): `<custom_tool_call>name="internet_search", "query"="关键词", "engines"=["google", "wikipedia"], "max_results"=10</custom_tool_call>`
                             """
                             payload_list.append({"role": "user", "parts": [{"text": error_feedback}]})
-                            payload_list.append({"role": "model", "parts": [{"text": CUSTOM_PROMPT_1}]})
+                            payload_list.append({"role": "model", "parts": [{"text": CUSTOM_PROMPT_2}]})
                             self.log.warning("Sent parse error feedback to model.")
                         else:
                             # 解析成功：执行工具
@@ -278,7 +257,26 @@ class LLM_Chat(commands.Cog):
 
                         # 1. 去除 Custom Tool Call 标签
                         if GEMINI_TOOL_CALL == "custom":
-                             raw_reply = re.sub(r'<custom_tool_call>.*?(?:</custom_tool_call>|$)', '', raw_reply, flags=re.DOTALL)
+                            pattern = r'<custom_tool_call>(.*?)(?=</custom_tool_call>|</|$)'
+                            match = re.search(pattern, text_content, re.DOTALL)
+                            if match:
+                                found_custom_tool = True
+                                tool_content_str = match.group(1).strip()
+                                
+                                if "</" in tool_content_str:
+                                    tool_content_str = tool_content_str.split("</")[0].strip()
+
+                                self.log.info(f"Custom Tool String Detected (Sanitized): {tool_content_str}")
+                                
+                                try:
+                                    lexer = ToolLexer(tool_content_str)
+                                    tokens = lexer.tokenize()
+                                    parser = ToolParser(tokens, tool_content_str)
+                                    parsed_result = parser.parse()
+                                    
+                                    custom_tool_data = {"name": parsed_result["name"], "args": parsed_result["args"]}
+                                except Exception as e:
+                                    parse_error_msg = str(e)
 
                         # 2. 去除停止符
                         if "<||reply_end||>" in raw_reply:
@@ -296,7 +294,7 @@ class LLM_Chat(commands.Cog):
                                 # 如果还没到最后且没输出完思考，强制重试
                                 payload_list.append({
                                     "role": "model",
-                                    "parts": [{"text": text_content+"\n没有成功输出</think>标签...重新生成回复:<think>"}]
+                                    "parts": [{"text": text_content+"\n\n自检到思维链标签未闭合,请在下方输出思维链闭合标签，然后输出正文。\n"}]
                                 })
                                 continue 
                             else:

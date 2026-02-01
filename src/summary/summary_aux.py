@@ -407,6 +407,18 @@ async def parse_message_history_to_prompt(message:List[discord.Message],post_pro
         nickname = seen_members[author_id]
         human_text = items.content.replace("】", " ] ")
         img_urls :List[str] = [attachment.url for attachment in items.attachments]
+        # 检查是否有 forwarding snapshots
+        if hasattr(items, 'snapshots') and items.snapshots:
+            for snapshot in items.snapshots:
+                # snapshot 包含了被转发消息的快照
+                fwd_content = snapshot.content
+                if fwd_content:
+                    human_text += f"\n ↳ [Forwarded]: \"{fwd_content.replace('】', ' ] ')}\""
+                    
+                    # 提取转发消息中的附件
+                if IMG_VIEW and snapshot.attachments:
+                    img_urls.extend([att.url for att in snapshot.attachments])
+
         current_text =f"【<display_name:\"{nickname}\"> say : \"{human_text}\" 】\n"
 
         if items.reference and items.reference.message_id: #说明回复了某一天消息

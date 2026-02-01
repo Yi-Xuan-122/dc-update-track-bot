@@ -11,6 +11,13 @@ main_text
 system_prompt = {"role":"system","content":SYSTEM_PROMPT}
 FINAL_PROMPT = """
 
+CUSTOM_PROMPT_1 = f"""
+<think>
+"""
+CUSTOM_PROMPT_2 = f"""
+
+"""
+<think>OK</think><custom_tool_call>name=
 """
 final_prompt = {"role":"<custom:system/user/assistant>","content":FINAL_PROMPT} #openai
 # 1开启自定义工具，0关闭

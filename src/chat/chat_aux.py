@@ -85,18 +85,21 @@ class ChatHistoryTemplate:
         batch_size = len(messages)
         is_first_batch = (self.total_processed_count == 0)
 
+        # === 第一遍循环：构建索引和预览 ===
         for i, msg in enumerate(messages):
-            # 楼层计算：
-            # Newest (i=0) -> floor = total + 1 + 0 = total + 1
-            # Oldest (i=99) -> floor = total + 1 + 99 = total + 100
-            # 结果：最新消息是 Floor X，旧消息是 Floor X+N
+            # 楼层计算
             floor_num = self.total_processed_count + 1 + i
             
             clean_text = msg.content.replace("\n", " ").strip()
+            
+            # --- FIX: 增强预览逻辑，识别转发消息 ---
             if len(clean_text) > 30:
                 short_text = clean_text[:30] + "..."
             elif not clean_text and msg.attachments:
                 short_text = "[图片/文件]"
+            # 检查 snapshots 属性是否存在且非空
+            elif not clean_text and getattr(msg, 'snapshots', None):
+                short_text = "[转发消息]"
             elif not clean_text:
                 short_text = "[无内容]"
             else:
@@ -104,14 +107,14 @@ class ChatHistoryTemplate:
             
             tag = self._get_identity_tag(msg.author)
             
-            # 存入 Map，供回复引用查询
+            # 存入 Map
             self.message_id_map[msg.id] = {
                 "floor": floor_num,
                 "preview": short_text,
                 "tag": tag
             }
 
-        # 第二轮遍历：生成 Prompt (倒序: Oldest -> Newest)
+        # === 第二遍循环：生成 Prompt (倒序) ===
         chrono_messages = list(reversed(messages))
         start_str = ""
         if is_first_batch:
@@ -121,10 +124,9 @@ class ChatHistoryTemplate:
             if members_ids and (items.author.id not in members_ids):
                 continue
             
-            # 直接从 map 获取该消息的属性，避免重复计算
             current_meta = self.message_id_map.get(items.id)
             if not current_meta:
-                continue # 理论上不会发生
+                continue 
 
             current_floor = current_meta['floor']
             tag_content = current_meta['tag']
@@ -132,7 +134,6 @@ class ChatHistoryTemplate:
             # --- 时间流逝逻辑 ---
             pass_time_str = ""
             current_time = items.created_at
-            
             if self.last_timestamp is None:
                 pass_time_str = f"\n[时间:{convert_to_local_timezone(current_time)}]\n"
             else:
@@ -140,31 +141,53 @@ class ChatHistoryTemplate:
                 if time_diff.total_seconds() > 300:
                     minutes_passed = int(time_diff.total_seconds() // 60)
                     pass_time_str = f"\n[System Seed:{self.seed}]: ---(过了{minutes_passed}分钟后，当前时间:{convert_to_local_timezone(current_time)})\n"
-            
             self.last_timestamp = current_time
 
-            # --- 处理回复引用 (Reply Logic) ---
+            # --- 回复引用逻辑 ---
             reply_str = ""
             if items.reference and items.reference.message_id:
                 ref_id = items.reference.message_id
                 target_meta = self.message_id_map.get(ref_id)
-                
                 if target_meta:
-                    # 找到了目标楼层 (在当前批次或之前批次)
                     ref_floor = target_meta['floor']
                     ref_preview = target_meta['preview']
                     ref_tag = target_meta['tag']
-                    # 格式：[Replying to #15 <Tag>: "preview..."]
                     reply_str = f"[Replying to Floor:[#{ref_floor}] <{ref_tag}>: \"{ref_preview}\"]\n"
                 else:
-                    # 找不到 (可能是太久以前未加载，或被删除)
                     reply_str = f"[Replying to Unknown Floor (MsgID:{ref_id})]\n"
 
-            # --- 消息正文 ---
+            # --- 消息正文与附件 ---
             human_text = items.content.replace("】", " ] ")
             img_urls: List[str] = [att.url for att in items.attachments] if IMG_VIEW else []
+
+            # 检查是否有 forwarding snapshots
+            if hasattr(items, 'snapshots') and items.snapshots:
+                for snapshot in items.snapshots:
+                    # 1. 尝试提取文本内容
+                    # 兼容性写法：部分版本直接在snapshot下，部分在message属性下
+                    fwd_content = getattr(snapshot, 'content', None)
+                    if fwd_content is None and hasattr(snapshot, 'message'):
+                        fwd_content = getattr(snapshot.message, 'content', "")
+                    
+                    # 2. 尝试提取附件
+                    snap_attachments = getattr(snapshot, 'attachments', [])
+                    if not snap_attachments and hasattr(snapshot, 'message'):
+                        snap_attachments = getattr(snapshot.message, 'attachments', [])
+                    
+                    # 3. 构建文本描述
+                    # 如果有文本，添加文本
+                    if fwd_content:
+                        human_text += f"\n ↳ [Forwarded]: \"{fwd_content.replace('】', ' ] ')}\""
+                    
+                    # 如果没有文本但有附件，在文本中显式标记，防止 human_text 为空
+                    elif snap_attachments:
+                        human_text += "\n ↳ [Forwarded]: (包含图片/附件)"
+
+                    # 4. 提取附件URL供视觉模型使用
+                    if IMG_VIEW and snap_attachments:
+                        img_urls.extend([att.url for att in snap_attachments])
             
-            # 最终格式: [#{Floor}] {Reply} 【<Tag> say: "Content"】
+            # 最终格式
             msg_content = f"[#{current_floor}] {reply_str}【<{tag_content}> say : \"{human_text}\" 】\n"
             
             final_str = pass_time_str + msg_content
@@ -180,9 +203,6 @@ class ChatHistoryTemplate:
         return main_prompt
 
     async def finalize_prompt(self, main_prompt: Any, post_processing_callback: PostProcessing) -> Any:
-        """
-        结束对话记录封装。
-        """
         current_time_str = convert_to_local_timezone(datetime.datetime.now(UTC_ZONE)) if self.last_timestamp is None else convert_to_local_timezone(self.last_timestamp)
         
         member_list_parts = [
