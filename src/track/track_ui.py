@@ -20,6 +20,8 @@ class SubscriptionView(ui.View):
         user = interaction.user
         user_id = interaction.user.id
         thread_id = interaction.channel.id
+        guild_id = interaction.guild.id if interaction.guild else interaction.channel.guild.id
+
         new_status = None
         await interaction.response.defer()
 
@@ -29,11 +31,11 @@ class SubscriptionView(ui.View):
             async with bot.db_pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     toggle_sql = """
-                INSERT INTO thread_subscriptions (user_id, thread_id, subscribe_release)
-                VALUES (%s, %s, TRUE)
-                ON DUPLICATE KEY UPDATE subscribe_release = NOT subscribe_release;
+                INSERT INTO thread_subscriptions (user_id, thread_id, guild_id, subscribe_release)
+                VALUES (%s, %s, %s, TRUE)
+                ON DUPLICATE KEY UPDATE subscribe_release = NOT subscribe_release, guild_id = VALUES(guild_id);
                 """
-                    await cursor.execute(toggle_sql, (user_id, thread_id))
+                    await cursor.execute(toggle_sql, (user_id, thread_id, guild_id))
                     select_sql = "SELECT subscribe_release FROM thread_subscriptions WHERE user_id = %s AND thread_id = %s"
                     await cursor.execute(select_sql, (user_id, thread_id))    
                     result = await cursor.fetchone()
@@ -61,6 +63,7 @@ class SubscriptionView(ui.View):
         user = interaction.user
         user_id = interaction.user.id
         thread_id = interaction.channel.id
+        guild_id = interaction.guild.id if interaction.guild else interaction.channel.guild.id
         new_status = None
         await interaction.response.defer()
         
@@ -70,11 +73,11 @@ class SubscriptionView(ui.View):
             async with bot.db_pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     toggle_sql = """
-                INSERT INTO thread_subscriptions (user_id, thread_id, subscribe_test)
-                VALUES (%s, %s, TRUE)
-                ON DUPLICATE KEY UPDATE subscribe_test = NOT subscribe_test;  
+                INSERT INTO thread_subscriptions (user_id, thread_id, guild_id, subscribe_test)
+                VALUES (%s, %s, %s, TRUE)
+                ON DUPLICATE KEY UPDATE subscribe_test = NOT subscribe_test, guild_id = VALUES(guild_id);  
             """
-                    await cursor.execute(toggle_sql, (user_id, thread_id))
+                    await cursor.execute(toggle_sql, (user_id, thread_id, guild_id))
                     select_sql = "SELECT subscribe_test FROM thread_subscriptions WHERE user_id = %s AND thread_id = %s"
                     await cursor.execute(select_sql, (user_id, thread_id))
                     result = await cursor.fetchone()
@@ -806,13 +809,20 @@ class TrackNewThreadView(ui.View):
                     result = await cursor.fetchone()
                     select_result = result['select_result']
                     if select_result == 0: #第一次创建更新推流
-                        await cursor.execute("INSERT IGNORE INTO managed_threads (thread_id, guild_id, author_id) VALUES (%s, %s, %s)",(thread_id, guild_id, thread_owner_id))
+                        await cursor.execute(
+                            """INSERT INTO managed_threads (thread_id, guild_id, author_id)
+                            VALUES (%s, %s, %s) AS new_values
+                            ON DUPLICATE KEY UPDATE
+                            guild_id = new_values.guild_id,
+                            author_id = new_values.author_id""",
+                            (thread_id, guild_id, thread_owner_id)
+                        )
                         #开始遍历所有关注了该作者的用户，并且在新follower_thread_notifications表中插入，表示这是需要通知的新帖子
                         insert_notification_sql = """
-                        INSERT INTO follower_thread_notifications (follower_id, thread_id)
-                        SELECT follower_id, %s FROM author_follows WHERE author_id = %s
+                        INSERT INTO follower_thread_notifications (follower_id, thread_id, guild_id)
+                        SELECT follower_id, %s, %s FROM author_follows WHERE author_id = %s
                     """
-                        await cursor.execute(insert_notification_sql,(thread_id,thread_owner_id))
+                        await cursor.execute(insert_notification_sql, (thread_id, guild_id, thread_owner_id))
                 await conn.commit()
         except Exception as e:
             logging.error(f"数据库错误在track_thread_choice_yes :{e}")

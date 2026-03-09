@@ -5,8 +5,11 @@ import datetime
 from src import config , database
 from src.track.db import setup_database
 from src.track.track_command import SubscriptionView , setup_commands
+from src.lottery.db import setup_lottery_tables
+from src.lottery.command import setup_lottery_commands
+from src.lottery.scheduler import LotteryScheduler
 from src.track.track_ui import TrackNewThreadView
-from src.config import get_utc8_now_str ,SUMMARY_SETUP,LLM_CHAT_SETUP
+from src.config import get_utc8_now_str ,SUMMARY_SETUP,LLM_CHAT_SETUP, LOTTERY_SETUP
 from src.chat.chat_src import LLM_Chat
 import asyncio
 from src.track.db import check_and_create_user
@@ -24,9 +27,11 @@ class MyBot(commands.Bot):
         self.thread_creation_queue = Queue()
         self.start_time = datetime.datetime.now(datetime.timezone.utc)
         self.db_pool = None
+        self.lottery_scheduler: LotteryScheduler | None = None
 
         # 从 config 模块加载配置
         self.TARGET_GUILD_ID = config.TARGET_GUILD_ID
+        self.TARGET_GUILD_IDS = config.TARGET_GUILD_IDS
         self.ADMIN_IDS = config.ADMIN_IDS
         self.ALLOWED_CHANNELS = config.ALLOWED_CHANNELS
         self.EMBED_TITLE = config.EMBED_TITLE
@@ -43,6 +48,7 @@ class MyBot(commands.Bot):
         self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS = config.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS
         self.TRACK_NEW_THREAD_EMBED_TITLE = config.TRACK_NEW_THREAD_EMBED_TITLE
         self.TRACK_NEW_THREAD_EMBED_TEXT = config.TRACK_NEW_THREAD_EMBED_TEXT
+        self.LOTTERY_SETUP = config.LOTTERY_SETUP
 
     async def setup_hook(self):
         # 0.启动COG模块
@@ -63,10 +69,23 @@ class MyBot(commands.Bot):
         
         # 2. 自动创建表
         await setup_database(self.db_pool)
+        if self.LOTTERY_SETUP == 1:
+            await setup_lottery_tables(self.db_pool)
+            logging.info("开启Lottery功能")
+        else:
+            logging.info("关闭Lottery功能")
 
         # 3. 注册指令
-        target_guild = discord.Object(id=self.TARGET_GUILD_ID)
-        setup_commands(self.tree, target_guild)
+        target_guild_ids = self.TARGET_GUILD_IDS or ([self.TARGET_GUILD_ID] if self.TARGET_GUILD_ID else [])
+        if not target_guild_ids:
+            logging.critical("未配置任何 TARGET_GUILD_ID，无法注册指令。")
+            await self.close()
+            return
+        for index, guild_id in enumerate(target_guild_ids):
+            target_guild = discord.Object(id=guild_id)
+            setup_commands(self.tree, target_guild, include_global=(index == 0))
+            if self.LOTTERY_SETUP == 1:
+                setup_lottery_commands(self.tree, target_guild)
 
         # 4. 注册持久化视图
         self.add_view(SubscriptionView())
@@ -74,15 +93,22 @@ class MyBot(commands.Bot):
 
         # 5. 同步指令
         try:
-            logging.info(f"正在尝试将指令同步到服务器 ID: {target_guild.id}...")
-            synced_commands = await self.tree.sync(guild=target_guild)
+            total_synced = 0
+            for guild_id in target_guild_ids:
+                target_guild = discord.Object(id=guild_id)
+                logging.info(f"正在尝试将指令同步到服务器 ID: {target_guild.id}...")
+                synced_commands = await self.tree.sync(guild=target_guild)
+                total_synced += len(synced_commands)
             synced_global = await self.tree.sync(guild=None)
-            logging.info(f"成功同步了 {len(synced_commands) + len(synced_global)} 个指令。")
+            logging.info(f"成功同步了 {total_synced + len(synced_global)} 个指令。")
         except Exception as e:
             logging.critical(f"指令同步时发生严重错误: {e}")
 
         # 6. 启动后台任务
         self.loop.create_task(self.thread_processor_task())
+        if self.LOTTERY_SETUP == 1:
+            self.lottery_scheduler = LotteryScheduler(self)
+            self.lottery_scheduler.start()
         if self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS == 1:
             logging.info("启用追踪新帖子功能")
         else:

@@ -8,7 +8,9 @@ load_dotenv()
 
 # --- Bot 配置 ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TARGET_GUILD_ID = int(os.getenv("TARGET_GUILD_ID"))
+target_guild_raw = os.getenv("TARGET_GUILD_ID", "")
+TARGET_GUILD_IDS = [int(gid.strip()) for gid in target_guild_raw.split(',') if gid.strip().isdigit()]
+TARGET_GUILD_ID = TARGET_GUILD_IDS[0] if TARGET_GUILD_IDS else None
 ADMIN_IDS = [int(uid.strip()) for uid in os.getenv("ADMIN_IDS", "").split(',') if uid.strip().isdigit()]
 ALLOWED_CHANNELS = [int(c.strip()) for c in os.getenv("ALLOWED_CHANNELS").split(",")]
 
@@ -33,6 +35,11 @@ UPDATE_MENTION_MAX_NUMBER = int(os.getenv("UPDATE_MENTION_MAX_NUMBER", 50))
 UPDATE_MENTION_DELAY = int(os.getenv("UPDATE_MENTION_DELAY", 1000))
 UPDATES_PER_PAGE = int(os.getenv("UPDATES_PER_PAGE", 5))
 TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS = int(os.getenv("TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS", 1))
+
+# --- Lottery config ---
+LOTTERY_SETUP = int(os.getenv("LOTTERY_SETUP", 0))
+lottery_default_role = os.getenv("LOTTERY_DEFAULT_ROLE_ID")
+LOTTERY_DEFAULT_ROLE_ID = int(lottery_default_role) if lottery_default_role and lottery_default_role.isdigit() else None
 
 # --- 数据库配置 ---
 MYSQL_USER = os.getenv('MYSQL_USER')

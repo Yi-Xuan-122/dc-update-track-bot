@@ -15,14 +15,16 @@ if TYPE_CHECKING:
 import logging
 log = logging.getLogger(__name__)
 # --- 指令注册函数 ---
-def setup_commands(tree: app_commands.CommandTree, guild: discord.Object):
+def setup_commands(tree: app_commands.CommandTree, guild: discord.Object, include_global: bool = True):
     """将所有指令添加到指令树中"""
-    tree.add_command(CommandGroup_bot(name="bot", description="机器人指令"), guild=guild)
-    tree.add_command(create_update_feed, guild=guild)
-    tree.add_command(update_feed, guild=guild)
-    tree.add_command(review_subscription,guild=guild)
-    tree.add_command(manage_permission,guild=guild)
-    tree.add_command(manage_subscription_panel)
+    if guild:
+        tree.add_command(CommandGroup_bot(name="bot", description="机器人指令"), guild=guild)
+        tree.add_command(create_update_feed, guild=guild)
+        tree.add_command(update_feed, guild=guild)
+        tree.add_command(review_subscription, guild=guild)
+        tree.add_command(manage_permission, guild=guild)
+    if include_global:
+        tree.add_command(manage_subscription_panel)
 
 async def is_admin_user(Interaction: Interaction) -> bool:
     return Interaction.user.id in ADMIN_IDS
@@ -102,10 +104,10 @@ async def create_update_feed(interaction: discord.Interaction):
                         (thread_id, guild_id, thread_owner.id)
                 )
                     insert_notification_sql = """
-                        INSERT INTO follower_thread_notifications (follower_id, thread_id)
-                        SELECT follower_id, %s FROM author_follows WHERE author_id = %s
+                        INSERT INTO follower_thread_notifications (follower_id, thread_id, guild_id)
+                        SELECT follower_id, %s, %s FROM author_follows WHERE author_id = %s
                     """
-                    await cursor.execute(insert_notification_sql, (thread_id, thread_owner.id))
+                    await cursor.execute(insert_notification_sql, (thread_id, guild_id, thread_owner.id))
                 else: #如果不是第一次创建
                     embed = discord.Embed(title=bot.EMBED_TITLE, description=f"ℹ️ 这个帖子已经开启了更新推流功能。\n\n{bot.EMBED_TEXT}", color=discord.Color.blue())
                     await interaction.followup.send(embed=embed, view=SubscriptionView(), ephemeral=True)
@@ -270,7 +272,7 @@ async def manage_subscription_panel(interaction: discord.Interaction):
 )
 async def update_feed(interaction: discord.Interaction, update_type: app_commands.Choice[str], url: str, message: str="无"):
     bot: "MyBot" = interaction.client
-    guild_id = bot.TARGET_GUILD_ID
+    guild_id = interaction.guild.id if interaction.guild else bot.TARGET_GUILD_ID
     valid_url = f"https://discord.com/channels/{guild_id}/"
     user = interaction.user
     thread = interaction.channel
@@ -353,10 +355,10 @@ async def update_feed(interaction: discord.Interaction, update_type: app_command
                     users_to_notify.add(row[0])
 
                 insert_notification_sql = """
-                        INSERT IGNORE INTO follower_thread_notifications (follower_id, thread_id)
-                        SELECT follower_id, %s FROM author_follows WHERE author_id = %s
+                        INSERT IGNORE INTO follower_thread_notifications (follower_id, thread_id, guild_id)
+                        SELECT follower_id, %s, %s FROM author_follows WHERE author_id = %s
                     """
-                await cursor.execute(insert_notification_sql,(thread.id,thread_owner_id))
+                await cursor.execute(insert_notification_sql, (thread.id, guild_id, thread_owner_id))
             
             await conn.commit()
 

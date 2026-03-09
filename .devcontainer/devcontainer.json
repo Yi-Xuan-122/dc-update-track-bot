@@ -21,7 +21,8 @@
         "ms-python.python",
         "ms-python.vscode-pylance", 
         "donjayamanne.githistory",
-        "cweijan.vscode-mysql-client2"
+        "cweijan.vscode-mysql-client2",
+        "lianues.limcode"
       ],
       "settings": {
       "python.defaultInterpreterPath": "/usr/local/bin/python"
