@@ -55,6 +55,38 @@ class LLM_Chat(commands.Cog):
             pass
         return False
 
+    async def _fetch_anchored_history(self, trigger_message: discord.Message, limit: int = 100) -> list[discord.Message]:
+        """
+        以触发消息自身作为锚点抓取上下文。
+        这样即使两个触发几乎同时发生，也不会都命中“最新100条”的同一份缓存快照。
+        Discord.py 的 history 接口不能直接传消息 URL，因此这里记录 jump_url 仅用于日志，
+        实际抓取时使用与该 URL 对应的 message.id 作为 before 锚点。
+        """
+        anchor_url = trigger_message.jump_url
+        anchor_before = discord.Object(id=trigger_message.id + 1)
+        self.log.debug(f"Fetching anchored context from trigger message: {anchor_url}")
+
+        raw_messages = [
+            msg async for msg in trigger_message.channel.history(
+                limit=limit,
+                before=anchor_before,
+                oldest_first=False
+            )
+        ]
+
+        deduped_messages: list[discord.Message] = []
+        seen_message_ids: set[int] = set()
+        for msg in raw_messages:
+            if msg.id in seen_message_ids:
+                continue
+            deduped_messages.append(msg)
+            seen_message_ids.add(msg.id)
+
+        if trigger_message.id not in seen_message_ids:
+            deduped_messages.insert(0, trigger_message)
+
+        return deduped_messages[:limit]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -78,9 +110,7 @@ class LLM_Chat(commands.Cog):
 
         try:
             async with message.channel.typing():
-                history_messages = [
-                    msg async for msg in message.channel.history(limit=100)
-                ]
+                history_messages = await self._fetch_anchored_history(message, limit=100)
                 
                 processor = ChatHistoryTemplate(bot_user=self.bot.user,admin_ids=ADMIN_IDS)
                 
@@ -106,7 +136,7 @@ class LLM_Chat(commands.Cog):
                         "parts": [ { "text": CUSTOM_PROMPT_1 } ]
                     })
                 else:
-                    final_data_step1 = processor.parse_messages(
+                    final_data_step_1 = await processor.parse_messages(
                         messages=history_messages,
                         post_processing_callback=openai_format
                     )

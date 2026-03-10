@@ -31,7 +31,11 @@ class Summary_fetch_task:
     def __post_init__(self):
         guild_id = int(TARGET_GUILD_ID)
         url = f"https://discord.com/channels/{guild_id}/{self.target_channel}"
-        self.base64_id: str = base64.b64encode(f'{url}:{self.fetch_total}'.encode('utf-8'))
+        request_key = (
+            f"{url}:{self.start_before_message_id or 'latest'}:"
+            f"{self.fetch_total}:{self.single_limit}"
+        )
+        self.base64_id: str = base64.b64encode(request_key.encode('utf-8')).decode('utf-8')
 
 class queue_cache: #用来缓存的队列
     def __init__(self):
@@ -70,6 +74,20 @@ class RateLimitingScheduler:
         self.bot = bot
         logging.debug("RateLimitingScheduler loaded")
 
+    @staticmethod
+    def _safe_set_result(future: asyncio.Future, result: Any):
+        if future.done():
+            logging.debug("Summary fetch future already resolved, skip setting result.")
+            return
+        future.set_result(result)
+
+    @staticmethod
+    def _safe_set_exception(future: asyncio.Future, exc: Exception):
+        if future.done():
+            logging.debug("Summary fetch future already resolved, skip setting exception.")
+            return
+        future.set_exception(exc)
+
     def _is_rate_limit(self, channel_id: int)-> bool:
         if channel_id not in self.channel_counts:
             return False
@@ -101,71 +119,69 @@ class RateLimitingScheduler:
         return max(0.0, reset_time - time.time())
     
     async def run(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while True:
-            if self.main_queue.empty():
-                task: Summary_fetch_task = await self.main_queue.get()
+            task: Summary_fetch_task = await self.main_queue.get()
+            try:
+                if task.future.cancelled():
+                    logging.debug(f"Skip cancelled fetch task for channel {task.target_channel}.")
+                    continue
 
-            channel_id = task.target_channel #这里是缓存判断的开始
-            
-            is_cache = False
-            cache_task = await self.find_and_get_cache(task.base64_id)#尝试从cache中获取，此时缓存中的被取出
-            if cache_task:
-                is_cache = True
-                task = cache_task
+                cache_task = await self.find_and_get_cache(task.base64_id)#尝试从cache中获取，此时缓存中的被取出
+                if cache_task:
+                    task = cache_task
 
-            if is_cache == False: #如果缓存命中则跳过，直接重新计算分片任务
+                if task.future.cancelled():
+                    logging.debug(f"Skip cancelled cached task for channel {task.target_channel}.")
+                    continue
+
+                channel_id = task.target_channel #这里是缓存判断的开始
+
                 if self._is_rate_limit(channel_id): #判断是否需要等待
                     retry_after_s = self._calculate_retry_after(channel_id)
                 
                     def re_queue_task():
+                        if task.future.cancelled():
+                            return
                         task.is_blocked = False
                         self.main_queue.put_nowait(task)
                         self.rate_limit_event.set()
 
                     loop.call_later(retry_after_s,re_queue_task)
                     task.is_blocked = True
-                    self.main_queue.task_done()
                     continue
                 
                 self._update_counter(channel_id)
                 fetch_success = False
                 message : List[discord.Message] = []
-                try:
-                    channel: Optional[TextChannel] = self.bot.get_channel(channel_id)     
-                    if not channel:
-                        raise ValueError(f"Channel ID {channel_id} not found")
-                    while task.retry_count < self.MAX_RETRIES:
-                        try:
-                            fetch_start_time = time.monotonic()
-                            message = [msg async for msg in channel.history(
-                                limit=task.single_limit,
-                                before=discord.Object(id=int(task.start_before_message_id)) if task.start_before_message_id else None
-                            )]
-                            fetch_success = True
-                            task.retry_count = 0
-                            break
-                        except discord.HTTPException as e:
-                            if e.status in (429,500,503):
-                                task.retry_count += 1
-                                wait_time = 2**task.retry_count
-                                logging.warning(f"API error on channel {channel_id}. Status: {e.status}. Retrying ({task.retry_count}/{self.MAX_RETRIES}) in {wait_time}s...")
-                                await asyncio.sleep(wait_time)
-                            else:
-                                raise e
-                            
-                    if not fetch_success:
-                        logging.error(f"Failed to fetch for channel {channel_id} after retries. Caching task.")
-                        task.future.set_exception(RuntimeError(f"Failed to fetch for channel {channel_id} after retries."))
-                        task.future = asyncio.Future()
-                        self.queue_cache.add(task)#进入缓存
-                        self.main_queue.task_done()
-                        continue
-
-                except Exception as e:
-                    logging.error(f"Cannot get message : {e}")
-                    task.future.set_exception(e)
-                    self.main_queue.task_done()
+                channel: Optional[TextChannel] = self.bot.get_channel(channel_id)     
+                if not channel:
+                    raise ValueError(f"Channel ID {channel_id} not found")
+                while task.retry_count < self.MAX_RETRIES:
+                    try:
+                        fetch_start_time = time.monotonic()
+                        message = [msg async for msg in channel.history(
+                            limit=task.single_limit,
+                            before=discord.Object(id=int(task.start_before_message_id)) if task.start_before_message_id else None
+                        )]
+                        fetch_success = True
+                        task.retry_count = 0
+                        break
+                    except discord.HTTPException as e:
+                        if e.status in (429,500,503):
+                            task.retry_count += 1
+                            wait_time = 2**task.retry_count
+                            logging.warning(f"API error on channel {channel_id}. Status: {e.status}. Retrying ({task.retry_count}/{self.MAX_RETRIES}) in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            raise e
+                        
+                if not fetch_success:
+                    logging.error(f"Failed to fetch for channel {channel_id} after retries. Caching task.")
+                    self._safe_set_exception(task.future, RuntimeError(f"Failed to fetch for channel {channel_id} after retries."))
+                    task.future = loop.create_future()
+                    task.timestamp = time.time()
+                    self.queue_cache.add(task)#进入缓存
                     continue
 
                 fetch_duration = time.monotonic() - fetch_start_time
@@ -175,30 +191,34 @@ class RateLimitingScheduler:
                 is_channel_end = not message
                 is_limit_reached = len(task.aggregated_messages) >= task.fetch_total
 
-            is_channel_end = (not is_cache) and (not message)
+                if is_channel_end or is_limit_reached:
+                    logging.debug(f"Success: Channel {channel_id}。Reason: {'Reached the end of the channel' if is_channel_end else 'Reached the quantity limit'}。")
 
-            if is_channel_end or is_limit_reached:
-                logging.debug(f"Success: Channel {channel_id}。Reason: {'Reached the end of the channel' if is_channel_end else 'Reached the quantity limit'}。")
+                    final_messages = task.aggregated_messages[:task.fetch_total]
+                    final_messages.reverse() #现在的message对象是从旧到新的
+                    self._safe_set_result(task.future, final_messages)
+                    continue
 
-                final_messages = task.aggregated_messages[:task.fetch_total]
-                final_messages.reverse() #现在的message对象是从旧到新的
-                task.future.set_result(final_messages)
-            else:
                 logging.debug(f"Fetched {len(message)} items, totaling {len(task.aggregated_messages)}/{task.fetch_total}. Continuing to the next slice...")
                 remaining = task.fetch_total - len(task.aggregated_messages)
                 next_limit = min(remaining,100)
 
                 next_task = Summary_fetch_task(
-                timestamp=time.time(),
-                target_channel=task.target_channel,
-                fetch_total=task.fetch_total, # 传递总目标
-                single_limit=next_limit, # 下一个切片的 limit
-                start_before_message_id=message[-1].id, # 从最旧的消息开始
-                future=task.future # 传递同一个 future
-            )
+                    timestamp=time.time(),
+                    target_channel=task.target_channel,
+                    fetch_total=task.fetch_total, # 传递总目标
+                    single_limit=next_limit, # 下一个切片的 limit
+                    start_before_message_id=str(message[-1].id), # 从最旧的消息开始
+                    future=task.future # 传递同一个 future
+                )
                 next_task.aggregated_messages = task.aggregated_messages
                 await self.main_queue.put(next_task)
                 self.rate_limit_event.set()
+            except Exception as e:
+                logging.error(f"Cannot get message : {e}", exc_info=True)
+                self._safe_set_exception(task.future, e)
+            finally:
+                self.main_queue.task_done()
 
     async def estimate_completion_time(self, task_to_estimate: Summary_fetch_task) -> float:
         current_time = time.time()
@@ -258,8 +278,6 @@ class RateLimitingScheduler:
 
     async def queue_cache_event(self):
         logging.debug(f"queue_cacha loaded")
-        minutes_to_keep = 5 #5min
-        expiry_duration = datetime.timedelta(minutes=minutes_to_keep)
         while True:
             head_item = None
             sleep_duration = 1
@@ -267,16 +285,16 @@ class RateLimitingScheduler:
             async with self.lock:
                 if self.queue_cache.items:
                     head_item = self.queue_cache.items[0]
-                    expiry_time = head_item.timestamp + expiry_duration
+                    expiry_time = head_item.timestamp + self.CACHE_EXPIRATION_SECONDS
                     now = time.time()
-                    sleep_duration = max(0, (expiry_time - now).total_seconds())
+                    sleep_duration = max(0, expiry_time - now)
             
             await asyncio.sleep(sleep_duration)
             if head_item:
                 async with self.lock:
                     if self.queue_cache.items and self.queue_cache.items[0] == head_item:
                         now = time.time()
-                        if (head_item.timestamp + expiry_duration) <= now:
+                        if (head_item.timestamp + self.CACHE_EXPIRATION_SECONDS) <= now:
                             self.queue_cache.items.pop(0)
 
 
