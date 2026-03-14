@@ -1,22 +1,24 @@
+import importlib
+import inspect
+import os
 import discord
 from discord.ext import commands
 from asyncio import Queue
 import datetime
 from src import config , database
+from dotenv import load_dotenv
 from src.track.db import setup_database
 from src.track.track_command import SubscriptionView , setup_commands
 from src.lottery.db import setup_lottery_tables
 from src.lottery.command import setup_lottery_commands
 from src.lottery.scheduler import LotteryScheduler
 from src.track.track_ui import TrackNewThreadView
-from src.config import get_utc8_now_str ,SUMMARY_SETUP,LLM_CHAT_SETUP, LOTTERY_SETUP
-from src.chat.chat_src import LLM_Chat
+from src.config import get_utc8_now_str
 import asyncio
 from src.track.db import check_and_create_user
 from discord.errors import Forbidden
 import logging
 log = logging.getLogger(__name__)
-from src.summary.summary_command import summarizerCog
 
 # --- 机器人核心类 ---
 class MyBot(commands.Bot):
@@ -29,36 +31,126 @@ class MyBot(commands.Bot):
         self.db_pool = None
         self.lottery_scheduler: LotteryScheduler | None = None
 
-        # 从 config 模块加载配置
+        self.apply_runtime_config()
+
+    def apply_runtime_config(self):
+        """将 config 模块中的运行时配置同步到 Bot 实例。"""
         self.TARGET_GUILD_ID = config.TARGET_GUILD_ID
         self.TARGET_GUILD_IDS = config.TARGET_GUILD_IDS
         self.ADMIN_IDS = config.ADMIN_IDS
         self.ALLOWED_CHANNELS = config.ALLOWED_CHANNELS
         self.EMBED_TITLE = config.EMBED_TITLE
         self.EMBED_TEXT = config.EMBED_TEXT
+        self.EMBED_ERROR = config.EMBED_ERROR
         self.UPDATE_MENTION_MAX_NUMBER = config.UPDATE_MENTION_MAX_NUMBER
         self.UPDATE_MENTION_DELAY = config.UPDATE_MENTION_DELAY
         self.UPDATE_TITLE = config.UPDATE_TITLE
         self.UPDATE_TEXT = config.UPDATE_TEXT
+        self.UPDATE_ERROR = config.UPDATE_ERROR
         self.DM_PANEL_TITLE = config.DM_PANEL_TITLE
         self.DM_PANEL_TEXT = config.DM_PANEL_TEXT
         self.UPDATES_PER_PAGE = config.UPDATES_PER_PAGE
         self.MANAGE_SUBS_TITLE = config.MANAGE_SUBS_TITLE
         self.MANAGE_AUTHORS_TITLE = config.MANAGE_AUTHORS_TITLE
         self.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS = config.TRACK_NEW_THREAD_FROM_ALLOWED_CHANNELS
+        self.VIEW_UPDATES_TITLE = config.VIEW_UPDATES_TITLE
+        self.VIEW_UPDATES_TEXT = config.VIEW_UPDATES_TEXT
         self.TRACK_NEW_THREAD_EMBED_TITLE = config.TRACK_NEW_THREAD_EMBED_TITLE
         self.TRACK_NEW_THREAD_EMBED_TEXT = config.TRACK_NEW_THREAD_EMBED_TEXT
         self.LOTTERY_SETUP = config.LOTTERY_SETUP
 
+    async def _remove_cog_if_loaded(self, cog_name: str) -> bool:
+        current_cog = self.get_cog(cog_name)
+        if current_cog is None:
+            return False
+        remove_result = self.remove_cog(cog_name)
+        if inspect.isawaitable(remove_result):
+            await remove_result
+        return True
+
+    async def sync_llm_related_cogs(self, force_reload: bool = False):
+        """根据最新配置同步 Summary 与 LLM Chat 两个 Cog。"""
+        if config.SUMMARY_SETUP == 1:
+            from src.summary.summary_command import summarizerCog
+            if force_reload:
+                await self._remove_cog_if_loaded("summarizerCog")
+            if self.get_cog("summarizerCog") is None:
+                await self.add_cog(summarizerCog(self))
+                logging.info("开启Summary功能")
+        else:
+            if await self._remove_cog_if_loaded("summarizerCog"):
+                logging.info("关闭Summary功能")
+
+        if config.LLM_CHAT_SETUP == 1:
+            from src.chat.chat_src import LLM_Chat
+            if force_reload:
+                await self._remove_cog_if_loaded("LLM_Chat")
+            if self.get_cog("LLM_Chat") is None:
+                await self.add_cog(LLM_Chat(self))
+                logging.info("开启LLM_Chat功能")
+        else:
+            if await self._remove_cog_if_loaded("LLM_Chat"):
+                logging.info("关闭LLM_Chat功能")
+
+    async def reload_runtime_settings(self) -> dict:
+        """热重载 .env、配置模块与 LLM 相关提示词/功能。"""
+        old_blacklist_storage = None
+        try:
+            from src.chat.tool_src import tool_manager as current_tool_manager
+            old_blacklist_storage = dict(getattr(current_tool_manager.discord_tool, "blacklist_storage", {}))
+        except Exception:
+            old_blacklist_storage = None
+
+        load_dotenv(override=True)
+
+        module_specs = [
+            ("src.config", False),
+            ("src.chat.chat_env", True),
+            ("src.summary.summary_env", True),
+            ("src.chat.tool_src.custom_tool.searxng", True),
+            ("src.chat.tool_src.custom_tool.DiscordTool", True),
+            ("src.chat.tool_src", False),
+            ("src.llm", False),
+            ("src.summary.summary_command", True),
+            ("src.chat.chat_src", True),
+        ]
+        module_statuses: list[tuple[str, str]] = []
+
+        for module_name, optional in module_specs:
+            try:
+                module = importlib.import_module(module_name)
+                importlib.reload(module)
+                module_statuses.append((module_name, "ok"))
+            except ModuleNotFoundError:
+                if optional:
+                    module_statuses.append((module_name, "skip"))
+                    continue
+                raise
+
+        self.apply_runtime_config()
+
+        from src.chat.tool_src import tool_manager
+        if old_blacklist_storage is not None and getattr(tool_manager, "discord_tool", None):
+            tool_manager.discord_tool.blacklist_storage.update(old_blacklist_storage)
+        tool_manager.set_bot_instance(self)
+
+        await self.sync_llm_related_cogs(force_reload=True)
+
+        log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+        log_level = getattr(logging, log_level_str, logging.INFO)
+        logging.getLogger().setLevel(log_level)
+
+        return {
+            "module_statuses": module_statuses,
+            "summary_enabled": config.SUMMARY_SETUP == 1,
+            "llm_chat_enabled": config.LLM_CHAT_SETUP == 1,
+            "admin_count": len(self.ADMIN_IDS),
+            "log_level": log_level_str,
+        }
+
     async def setup_hook(self):
         # 0.启动COG模块
-        if SUMMARY_SETUP == 1 :
-            await self.add_cog(summarizerCog(self))
-            logging.info("开启Summary功能")
-        if LLM_CHAT_SETUP == 1:
-            await self.add_cog(LLM_Chat(self))
-            logging.info("开启LLM_Chat功能")
-        
+        await self.sync_llm_related_cogs()
 
         # 1. 初始化数据库连接池
         self.db_pool = await database.create_db_pool()

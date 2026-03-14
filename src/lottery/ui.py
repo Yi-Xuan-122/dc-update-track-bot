@@ -14,13 +14,66 @@ from src.lottery.models import (
     parse_draw_time,
     parse_role_ids,
     validate_lottery_config,
+    DrawTimeType,
     ParticipationMode,
     RandomMode,
+    format_lottery_draw_time,
 )
 from src.lottery import db as lottery_db
-from src.lottery.service import shuffle_options, check_member_eligibility
+from src.lottery.service import shuffle_options, check_member_eligibility, has_sufficient_prize_count
 
 log = logging.getLogger(__name__)
+
+PRIZE_HOSTING_DISCLAIMER = (
+    "若您的奖品为：steam兑换码、discord nitro链接等等性质的奖品，因为抽奖流程原因，将会被存储在该bot的数据库中，"
+    "在发放时将自动私聊中奖者奖品内容。开发者承诺：不以任何形式干涉数据库中的奖品内容，仅提供托管服务，"
+    "有任何奖品上的问题，请询问抽奖发起者。"
+    "有关bot如何使用，请看:https://discord.com/channels/1134557553011998840/1441705166708412578/1441705166708412578"
+)
+
+
+def build_prize_hosting_text(prize_hosting_enabled: bool, creator_id: int) -> str:
+    if prize_hosting_enabled:
+        return "已启用。开奖时将自动私聊中奖者奖品内容。"
+    return f"未启用。开奖私聊将自动拼接：兑奖请私聊发起者：<@{creator_id}>"
+
+
+def append_prize_hosting_fields(embed: discord.Embed, prize_hosting_enabled: bool, creator_id: int) -> discord.Embed:
+    embed.add_field(
+        name="奖品托管",
+        value=build_prize_hosting_text(prize_hosting_enabled, creator_id),
+        inline=False,
+    )
+    embed.add_field(name="免责声明", value=PRIZE_HOSTING_DISCLAIMER, inline=False)
+    return embed
+
+
+def build_draw_time_input_default(lottery: dict) -> str:
+    if lottery.get("draw_type") == DrawTimeType.DURATION.value:
+        draw_duration_minutes = lottery.get("draw_duration_minutes")
+        if draw_duration_minutes is not None:
+            return str(draw_duration_minutes)
+    draw_time = lottery.get("draw_time")
+    return draw_time.strftime("%m-%d-%H:%M") if isinstance(draw_time, datetime.datetime) else ""
+
+
+async def resolve_interaction_member(interaction: discord.Interaction) -> Optional[discord.Member]:
+    if isinstance(interaction.user, discord.Member):
+        return interaction.user
+
+    guild = interaction.guild
+    if not guild:
+        return None
+
+    member = guild.get_member(interaction.user.id)
+    if member:
+        return member
+
+    try:
+        return await guild.fetch_member(interaction.user.id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
 
 class PrizeModal(ui.Modal):
     def __init__(self, lottery_id: int, title: str = "新增奖品"):
@@ -78,11 +131,12 @@ def build_prize_summary(prizes: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_prize_manage_embed(prizes: List[dict]) -> discord.Embed:
+def build_prize_manage_embed(prizes: List[dict], prize_hosting_enabled: bool, creator_id: int) -> discord.Embed:
     total = len(prizes)
     embed = discord.Embed(title="奖品管理", color=discord.Color.blue())
     embed.add_field(name="总数", value=str(total), inline=False)
     embed.add_field(name="明细", value=build_prize_summary(prizes), inline=False)
+    append_prize_hosting_fields(embed, prize_hosting_enabled, creator_id)
     return embed
 
 
@@ -162,7 +216,7 @@ class LotteryEditModal(ui.Modal):
         self.draw_time_input = ui.TextInput(
             label="开奖时间(分钟后或MM-DD-HH:MM)",
             required=True,
-            default=lottery.get("draw_time").strftime("%m-%d-%H:%M"),
+            default=build_draw_time_input_default(lottery),
         )
         self.add_item(self.roles_input)
         self.add_item(self.join_days_input)
@@ -183,7 +237,7 @@ class LotteryEditModal(ui.Modal):
                 draw_after_minutes = int(self.draw_time_input.value)
             else:
                 draw_at = self.draw_time_input.value.strip()
-            draw_type, draw_time = parse_draw_time(draw_after_minutes, draw_at)
+            draw_type, draw_time, draw_duration_minutes = parse_draw_time(draw_after_minutes, draw_at)
             config_data = LotteryConfig(
                 title=self.original_title,
                 participation_mode=ParticipationMode.OPEN,
@@ -194,6 +248,7 @@ class LotteryEditModal(ui.Modal):
                 random_mode=RandomMode.TRUE,
                 draw_type=draw_type,
                 draw_time=draw_time,
+                draw_duration_minutes=draw_duration_minutes,
             )
             validate_lottery_config(config_data)
             await lottery_db.update_lottery_config(
@@ -206,6 +261,7 @@ class LotteryEditModal(ui.Modal):
                 config_data.allow_repeat,
                 config_data.random_mode.value,
                 config_data.draw_type.value,
+                config_data.draw_duration_minutes,
                 config_data.draw_time,
             )
             await interaction.response.send_message("✅ 抽奖配置已更新。", ephemeral=True)
@@ -277,18 +333,11 @@ class PrizeManageView(ui.View):
     @ui.button(label="刷新", style=discord.ButtonStyle.primary)
     async def refresh_prizes(self, interaction: discord.Interaction, button: ui.Button):
         bot = interaction.client
+        lottery = await lottery_db.get_lottery(bot.db_pool, self.lottery_id)
         prizes = await lottery_db.list_prizes(bot.db_pool, self.lottery_id)
-        embed = build_prize_manage_embed(prizes)
-        if interaction.message:
-            await interaction.response.edit_message(embed=embed, view=self)
-        else:
-            await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
-
-    @ui.button(label="刷新", style=discord.ButtonStyle.primary)
-    async def refresh_prizes(self, interaction: discord.Interaction, button: ui.Button):
-        bot = interaction.client
-        prizes = await lottery_db.list_prizes(bot.db_pool, self.lottery_id)
-        embed = build_prize_manage_embed(prizes)
+        prize_hosting_enabled = bool(lottery.get("prize_hosting_enabled")) if lottery else False
+        creator_id = int(lottery.get("creator_id", 0)) if lottery else 0
+        embed = build_prize_manage_embed(prizes, prize_hosting_enabled, creator_id)
         if interaction.message:
             await interaction.response.edit_message(embed=embed, view=self)
         else:
@@ -339,8 +388,11 @@ class LotteryPreviewView(ui.View):
     @ui.button(label="管理奖品", style=discord.ButtonStyle.primary)
     async def manage_prizes(self, interaction: discord.Interaction, button: ui.Button):
         bot = interaction.client
+        lottery = await lottery_db.get_lottery(bot.db_pool, self.lottery_id)
         prizes = await lottery_db.list_prizes(bot.db_pool, self.lottery_id)
-        embed = build_prize_manage_embed(prizes)
+        prize_hosting_enabled = bool(lottery.get("prize_hosting_enabled")) if lottery else False
+        creator_id = int(lottery.get("creator_id", 0)) if lottery else 0
+        embed = build_prize_manage_embed(prizes, prize_hosting_enabled, creator_id)
         await interaction.response.send_message(embed=embed, view=PrizeManageView(self.lottery_id), ephemeral=True)
 
     @ui.button(label="启动抽奖", style=discord.ButtonStyle.success)
@@ -361,14 +413,20 @@ class LotteryPreviewView(ui.View):
             await interaction.response.send_message("⚠️ 请先添加至少一个奖品。", ephemeral=True)
             return
         winners_count = int(lottery.get("winners_count", 1))
-        if len(prizes) < winners_count:
-            await interaction.response.send_message("⚠️ 奖品数量不足以覆盖中奖人数。", ephemeral=True)
+        if not has_sufficient_prize_count(len(prizes), winners_count):
+            await interaction.response.send_message("⚠️ 奖品数量必须大于或等于中奖人数。", ephemeral=True)
             return
-        await lottery_db.update_lottery_status(bot.db_pool, self.lottery_id, "active")
-        await lottery_db.delete_preview_queue(bot.db_pool, interaction.user.id)
-        await interaction.response.send_message("✅ 抽奖已启动。", ephemeral=True)
-        if getattr(bot, "lottery_scheduler", None):
-            bot.lottery_scheduler.wake_up()
+        if lottery.get("draw_type") == DrawTimeType.DURATION.value:
+            draw_time_notice = f"相对开奖时长将以第一次执行 /lottery 开始 lottery_id:{self.lottery_id} 的时间为准。"
+        else:
+            draw_time_notice = (
+                f"请在 {format_lottery_draw_time(lottery.get('draw_time'))} 前执行 "
+                f"/lottery 开始 lottery_id:{self.lottery_id}。"
+            )
+        await interaction.response.send_message(
+            f"✅ 配置检查通过。请执行 /lottery 开始 lottery_id:{self.lottery_id} 发布抽奖参与入口。{draw_time_notice}",
+            ephemeral=True,
+        )
 
     @ui.button(label="修改配置", style=discord.ButtonStyle.secondary)
     async def edit_lottery(self, interaction: discord.Interaction, button: ui.Button):
@@ -429,7 +487,7 @@ class QuizAnswerSelect(ui.Select):
         if not guild:
             await interaction.followup.send("❌ 无法获取服务器信息。", ephemeral=True)
             return
-        member = guild.get_member(interaction.user.id)
+        member = await resolve_interaction_member(interaction)
         if not member:
             await interaction.followup.send("❌ 无法获取成员信息。", ephemeral=True)
             return
@@ -481,7 +539,7 @@ class JoinLotteryButton(ui.Button):
         if not guild:
             await interaction.followup.send("❌ 无法获取服务器信息。", ephemeral=True)
             return
-        member = guild.get_member(interaction.user.id)
+        member = await resolve_interaction_member(interaction)
         if not member:
             await interaction.followup.send("❌ 无法获取成员信息。", ephemeral=True)
             return

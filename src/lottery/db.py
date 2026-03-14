@@ -24,7 +24,9 @@ async def setup_lottery_tables(pool: aiomysql.pool.Pool) -> None:
                     winners_count INT NOT NULL,
                     allow_repeat BOOLEAN NOT NULL DEFAULT FALSE,
                     random_mode VARCHAR(16) NOT NULL DEFAULT 'true',
+                    prize_hosting_enabled BOOLEAN NOT NULL DEFAULT FALSE,
                     draw_type VARCHAR(32) NOT NULL,
+                    draw_duration_minutes INT DEFAULT NULL,
                     draw_time DATETIME NOT NULL,
                     preview_expires_at DATETIME NOT NULL,
                     question_payload JSON DEFAULT NULL,
@@ -78,6 +80,22 @@ async def setup_lottery_tables(pool: aiomysql.pool.Pool) -> None:
             """)
             if (await cursor.fetchone())[0] == 0:
                 await cursor.execute("ALTER TABLE lottery_events ADD COLUMN random_mode VARCHAR(16) NOT NULL DEFAULT 'true';")
+            await cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'lottery_events'
+                  AND COLUMN_NAME = 'prize_hosting_enabled'
+            """)
+            if (await cursor.fetchone())[0] == 0:
+                await cursor.execute("ALTER TABLE lottery_events ADD COLUMN prize_hosting_enabled BOOLEAN NOT NULL DEFAULT FALSE;")
+            await cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'lottery_events'
+                  AND COLUMN_NAME = 'draw_duration_minutes'
+            """)
+            if (await cursor.fetchone())[0] == 0:
+                await cursor.execute("ALTER TABLE lottery_events ADD COLUMN draw_duration_minutes INT DEFAULT NULL;")
         await conn.commit()
 
 
@@ -89,15 +107,15 @@ async def insert_lottery(pool: aiomysql.pool.Pool, payload: Dict[str, Any]) -> N
                 INSERT INTO lottery_events (
                     lottery_id, guild_id, channel_id, creator_id, title, status,
                     participation_mode, required_role_ids, min_join_days, winners_count,
-                    allow_repeat, random_mode, draw_type, draw_time, preview_expires_at, question_payload
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    allow_repeat, random_mode, prize_hosting_enabled, draw_type, draw_duration_minutes, draw_time, preview_expires_at, question_payload
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
                     payload["lottery_id"], payload["guild_id"], payload["channel_id"],
                     payload["creator_id"], payload.get("title"), payload["status"],
                     payload["participation_mode"], json.dumps(payload["required_role_ids"]),
                     payload["min_join_days"], payload["winners_count"], payload["allow_repeat"],
-                    payload["random_mode"], payload["draw_type"], payload["draw_time"], payload["preview_expires_at"],
+                    payload["random_mode"], payload.get("prize_hosting_enabled", False), payload["draw_type"], payload.get("draw_duration_minutes"), payload["draw_time"], payload["preview_expires_at"],
                     json.dumps(payload.get("question_payload")) if payload.get("question_payload") else None,
                 ),
             )
@@ -114,6 +132,16 @@ async def update_lottery_status(pool: aiomysql.pool.Pool, lottery_id: int, statu
         await conn.commit()
 
 
+async def update_lottery_draw_time(pool: aiomysql.pool.Pool, lottery_id: int, draw_time: datetime.datetime) -> None:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                "UPDATE lottery_events SET draw_time = %s WHERE lottery_id = %s",
+                (draw_time, lottery_id),
+            )
+        await conn.commit()
+
+
 async def update_lottery_config(
     pool: aiomysql.pool.Pool,
     lottery_id: int,
@@ -124,6 +152,7 @@ async def update_lottery_config(
     allow_repeat: bool,
     random_mode: str,
     draw_type: str,
+    draw_duration_minutes: Optional[int],
     draw_time: datetime.datetime,
 ) -> None:
     async with pool.acquire() as conn:
@@ -138,6 +167,7 @@ async def update_lottery_config(
                     allow_repeat = %s,
                     random_mode = %s,
                     draw_type = %s,
+                    draw_duration_minutes = %s,
                     draw_time = %s
                 WHERE lottery_id = %s
                 """,
@@ -149,6 +179,7 @@ async def update_lottery_config(
                     allow_repeat,
                     random_mode,
                     draw_type,
+                    draw_duration_minutes,
                     draw_time,
                     lottery_id,
                 ),

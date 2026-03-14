@@ -6,8 +6,10 @@ import datetime
 import re
 from src import config
 
+
 class LotteryConfigError(ValueError):
     pass
+
 
 class LotteryStatus(str, Enum):
     PREVIEW = "preview"
@@ -16,17 +18,21 @@ class LotteryStatus(str, Enum):
     FINISHED = "finished"
     CANCELLED = "cancelled"
 
+
 class ParticipationMode(str, Enum):
     OPEN = "open"
     QUIZ = "quiz"
+
 
 class RandomMode(str, Enum):
     TRUE = "true"
     PSEUDO = "pseudo"
 
+
 class DrawTimeType(str, Enum):
     DURATION = "duration"
     FIXED = "fixed"
+
 
 @dataclass
 class LotteryConfig:
@@ -39,6 +45,7 @@ class LotteryConfig:
     random_mode: RandomMode
     draw_type: DrawTimeType
     draw_time: datetime.datetime
+    draw_duration_minutes: Optional[int] = None
 
 
 LOTTERY_STATE_TRANSITIONS = {
@@ -64,7 +71,34 @@ def parse_role_ids(role_text: Optional[str], default_role_id: Optional[int]) -> 
     return list(dict.fromkeys(role_ids))
 
 
-def parse_draw_time(draw_after_minutes: Optional[int], draw_at_str: Optional[str]) -> tuple[DrawTimeType, datetime.datetime]:
+def normalize_lottery_time(draw_time: datetime.datetime) -> datetime.datetime:
+    if draw_time.tzinfo is None:
+        return draw_time.replace(tzinfo=config.UTC_PLUS_8)
+    return draw_time.astimezone(config.UTC_PLUS_8)
+
+
+def format_lottery_draw_time(draw_time: datetime.datetime) -> str:
+    normalized = normalize_lottery_time(draw_time)
+    return normalized.strftime("%Y-%m-%d %H:%M UTC+8")
+
+
+def build_draw_time_preview_text(
+    draw_type: DrawTimeType | str,
+    draw_time: datetime.datetime,
+    draw_duration_minutes: Optional[int],
+) -> str:
+    draw_type_value = draw_type.value if isinstance(draw_type, DrawTimeType) else str(draw_type)
+    if draw_type_value == DrawTimeType.DURATION.value:
+        if draw_duration_minutes:
+            return f"以第一次执行 /lottery 开始 的时间为准，{draw_duration_minutes} 分钟后开奖"
+        return "以第一次执行 /lottery 开始 的时间为准开奖"
+    return format_lottery_draw_time(draw_time)
+
+
+def parse_draw_time(
+    draw_after_minutes: Optional[int],
+    draw_at_str: Optional[str],
+) -> tuple[DrawTimeType, datetime.datetime, Optional[int]]:
     utc8 = config.UTC_PLUS_8
     now = datetime.datetime.now(utc8)
     if draw_after_minutes is not None and draw_at_str is not None:
@@ -72,9 +106,9 @@ def parse_draw_time(draw_after_minutes: Optional[int], draw_at_str: Optional[str
     if draw_after_minutes is None and draw_at_str is None:
         raise LotteryConfigError("必须设置开奖时间或开奖时长。")
     if draw_after_minutes is not None:
-        if draw_after_minutes < 30 or draw_after_minutes > 7 * 24 * 60:
-            raise LotteryConfigError("开奖时长必须在 30 分钟到 7 天之间。")
-        return DrawTimeType.DURATION, now + datetime.timedelta(minutes=draw_after_minutes)
+        if draw_after_minutes < 3 or draw_after_minutes > 7 * 24 * 60:
+            raise LotteryConfigError("开奖时长必须在 3 分钟到 7 天之间。")
+        return DrawTimeType.DURATION, now + datetime.timedelta(minutes=draw_after_minutes), draw_after_minutes
     if not re.fullmatch(r"\d{2}-\d{2}-\d{2}:\d{2}", draw_at_str or ""):
         raise LotteryConfigError("开奖时间格式必须为 MM-DD-HH:MM，例如 02-24-12:00。")
     match = re.fullmatch(r"(\d{2})-(\d{2})-(\d{2}):(\d{2})", draw_at_str)
@@ -87,7 +121,7 @@ def parse_draw_time(draw_after_minutes: Optional[int], draw_at_str: Optional[str
         raise LotteryConfigError("开奖时间无效，请检查日期。") from exc
     if draw_time <= now:
         raise LotteryConfigError("开奖时间必须晚于当前时间。")
-    return DrawTimeType.FIXED, draw_time
+    return DrawTimeType.FIXED, draw_time, None
 
 
 def validate_lottery_config(config_data: LotteryConfig) -> None:

@@ -1,17 +1,19 @@
 from __future__ import annotations
 import discord
 from discord import app_commands ,Interaction
+from discord.ext import commands
 import datetime
 import os
 import psutil
 import aiomysql
 import asyncio 
-from src.config import get_utc8_now_str , ADMIN_IDS
+from src import config
+from src.config import get_utc8_now_str
 from src.track.track_ui import SubscriptionView, UserPanel , PermissionManageView
 from src.track.db import check_and_create_user
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from main import MyBot
+    from src.bot_app import MyBot
 import logging
 log = logging.getLogger(__name__)
 # --- 指令注册函数 ---
@@ -19,6 +21,7 @@ def setup_commands(tree: app_commands.CommandTree, guild: discord.Object, includ
     """将所有指令添加到指令树中"""
     if guild:
         tree.add_command(CommandGroup_bot(name="bot", description="机器人指令"), guild=guild)
+        tree.add_command(reload_bot_settings, guild=guild)
         tree.add_command(create_update_feed, guild=guild)
         tree.add_command(update_feed, guild=guild)
         tree.add_command(review_subscription, guild=guild)
@@ -26,14 +29,33 @@ def setup_commands(tree: app_commands.CommandTree, guild: discord.Object, includ
     if include_global:
         tree.add_command(manage_subscription_panel)
 
-async def is_admin_user(Interaction: Interaction) -> bool:
-    return Interaction.user.id in ADMIN_IDS
+async def is_admin_user(interaction: Interaction) -> bool:
+    bot = interaction.client
+    if interaction.user.id in getattr(bot, "ADMIN_IDS", config.ADMIN_IDS):
+        return True
+
+    if isinstance(bot, commands.Bot):
+        try:
+            return await bot.is_owner(interaction.user)
+        except Exception as e:
+            log.warning(f"检查 Bot owner 身份失败: {e}")
+
+    return False
+
+async def send_admin_denied_message(interaction: Interaction):
+    error_text = "❌ 权限不足：只有 Bot 主人或配置在 ADMIN_IDS 中的用户可以使用此命令。"
+    if interaction.response.is_done():
+        await interaction.followup.send(error_text, ephemeral=True)
+    else:
+        await interaction.response.send_message(error_text, ephemeral=True)
 
 @app_commands.guild_only()
 class CommandGroup_bot(app_commands.Group): #查询BOT运行状态command    
-    @app_commands.command(name="运行状态", description="查询目前Bot的运行状态，仅Bot主人可用")
-    @app_commands.check(is_admin_user)
+    @app_commands.command(name="运行状态", description="查询目前Bot的运行状态，仅 Bot 主人/管理员可用")
     async def hello(self, interaction: discord.Interaction):
+        if not await is_admin_user(interaction):
+            await send_admin_denied_message(interaction)
+            return
         bot: "MyBot" = interaction.client
         mem = psutil.virtual_memory()   
         mem_total = mem.total / (1024*1024)
@@ -66,6 +88,45 @@ class CommandGroup_bot(app_commands.Group): #查询BOT运行状态command
         start_time_str = start_time_utc8.strftime("%Y-%m-%d %H:%M:%S")
         embed.set_footer(text=f"机器人启动于: {start_time_str}")    
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@app_commands.command(name="重载bot设置", description="热重载 .env 与 LLM 提示词，仅 Bot 主人/管理员可用")
+@app_commands.guild_only()
+async def reload_bot_settings(interaction: discord.Interaction):
+    if not await is_admin_user(interaction):
+        await send_admin_denied_message(interaction)
+        return
+
+    bot: "MyBot" = interaction.client
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        reload_report = await bot.reload_runtime_settings()
+        module_lines = []
+        for module_name, status in reload_report["module_statuses"]:
+            display_name = module_name.replace("src.", "")
+            if status == "ok":
+                module_lines.append(f"✅ {display_name}")
+            else:
+                module_lines.append(f"⏭️ {display_name}")
+
+        embed = discord.Embed(
+            title="Bot 设置重载完成",
+            description="已重新加载 .env、LLM 相关提示词与运行时配置。",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Summary 功能", value="开启" if reload_report["summary_enabled"] else "关闭", inline=True)
+        embed.add_field(name="LLM Chat 功能", value="开启" if reload_report["llm_chat_enabled"] else "关闭", inline=True)
+        embed.add_field(name="管理员数量", value=str(reload_report["admin_count"]), inline=True)
+        embed.add_field(name="日志级别", value=reload_report["log_level"], inline=True)
+        embed.add_field(name="重载模块", value="\n".join(module_lines), inline=False)
+        embed.set_footer(text=f"完成时间: {get_utc8_now_str()}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        log.error(f"重载 Bot 设置失败: {e}", exc_info=True)
+        await interaction.followup.send(
+            f"❌ 重载失败：{e}\n请检查 .env、提示词文件或日志输出。",
+            ephemeral=True
+        )
 
 @app_commands.command(name="创建更新推流", description="为一个帖子开启更新订阅功能")
 async def create_update_feed(interaction: discord.Interaction):
